@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAction, QHeaderView, QMenu, QTableWidget,
+    QAbstractItemView, QHeaderView, QMenu, QTableWidget,
     QTableWidgetItem,
 )
 

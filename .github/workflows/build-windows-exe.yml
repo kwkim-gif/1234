@@ -1,0 +1,110 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [claude/stoic-davinci-78qHy]
+    paths:
+      - 'wsub/**'
+      - '.github/workflows/build-windows-exe.yml'
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: '빌드 방식'
+        required: true
+        default: 'onedir'
+        type: choice
+        options:
+          - onedir
+          - onefile
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: wsub
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: wsub/requirements.txt
+
+      - name: pip 업그레이드
+        run: python -m pip install --upgrade pip
+
+      - name: PyTorch CPU 버전 설치
+        # GPU가 없는 CI 환경이므로 CPU 전용 설치 (파일 크기 절감)
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: 의존 패키지 설치
+        run: |
+          pip install PySide6 faster-whisper openai-whisper transformers `
+            huggingface-hub ffmpeg-python numpy psutil requests pyinstaller
+
+      - name: FFmpeg 설치
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        id: setup-ffmpeg
+        with:
+          ffmpeg-version: release
+
+      - name: FFmpeg PATH 확인
+        run: ffmpeg -version
+
+      - name: onedir EXE 빌드
+        if: ${{ github.event.inputs.build_mode != 'onefile' }}
+        run: pyinstaller build.spec --noconfirm --clean
+
+      - name: onefile EXE 빌드
+        if: ${{ github.event.inputs.build_mode == 'onefile' }}
+        run: pyinstaller build_onefile.spec --noconfirm --clean
+
+      - name: 빌드 결과 확인
+        run: |
+          if (Test-Path "dist\W-Sub\W-Sub.exe") {
+            Write-Host "✅ dist\W-Sub\W-Sub.exe 생성됨"
+            Get-Item "dist\W-Sub\W-Sub.exe" | Select-Object Name, Length
+          } elseif (Test-Path "dist\W-Sub.exe") {
+            Write-Host "✅ dist\W-Sub.exe 생성됨"
+            Get-Item "dist\W-Sub.exe" | Select-Object Name, Length
+          } else {
+            Write-Host "❌ EXE 파일을 찾을 수 없습니다"
+            exit 1
+          }
+
+      - name: FFmpeg를 배포 폴더에 복사 (onedir)
+        if: ${{ github.event.inputs.build_mode != 'onefile' }}
+        run: |
+          if (Test-Path "dist\W-Sub") {
+            Copy-Item "${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}\ffmpeg.exe" "dist\W-Sub\" -Force
+            Copy-Item "${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}\ffprobe.exe" "dist\W-Sub\" -Force
+            Write-Host "✅ FFmpeg 복사 완료"
+          }
+
+      - name: 배포 패키지 ZIP 압축 (onedir)
+        if: ${{ github.event.inputs.build_mode != 'onefile' }}
+        run: |
+          Compress-Archive -Path "dist\W-Sub" -DestinationPath "dist\W-Sub_windows_x64.zip"
+          Write-Host "✅ W-Sub_windows_x64.zip 생성됨"
+
+      - name: 아티팩트 업로드 (onedir)
+        if: ${{ github.event.inputs.build_mode != 'onefile' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: W-Sub_windows_x64
+          path: wsub/dist/W-Sub_windows_x64.zip
+          retention-days: 30
+
+      - name: 아티팩트 업로드 (onefile)
+        if: ${{ github.event.inputs.build_mode == 'onefile' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: W-Sub_windows_x64_onefile
+          path: wsub/dist/W-Sub.exe
+          retention-days: 30
