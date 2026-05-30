@@ -40,22 +40,23 @@ def check_ctranslate2() -> None:
 
 def find_cublas() -> None:
     print("\n[cublas64_12.dll search]")
-    roots: list[str] = []
+    import glob
+    roots = [sys.prefix, os.path.dirname(sys.executable)]
     cuda_path = os.environ.get("CUDA_PATH")
     if cuda_path:
         roots.append(cuda_path)
-    roots.append(sys.prefix)  # venv / python install (includes nvidia wheels)
+    for r in [r"C:\Program Files\NVIDIA GPU Computing Toolkit", r"C:\Windows\System32"]:
+        roots.append(r)
 
     for base in roots:
         if not base or not os.path.isdir(base):
             continue
-        for root, _dirs, files in os.walk(base):
-            for f in files:
-                if f.lower() == "cublas64_12.dll":
-                    print(f"  found: {os.path.join(root, f)}")
-                    return
+        matches = glob.glob(os.path.join(base, "**", "cublas64_12.dll"), recursive=True)
+        if matches:
+            print(f"  found: {matches[0]}")
+            return
     print("  [WARN] cublas64_12.dll not found.")
-    print("         Needs nvidia-cublas-cu12 wheel or CUDA Toolkit 12.x.")
+    print("         Run reinstall_cuda_run.bat to install nvidia-cublas-cu12.")
 
 
 if __name__ == "__main__":
