@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import traceback
-import numpy as np
 from typing import Generator
 
 from app.engines.base_engine import BaseWhisperEngine
@@ -38,14 +37,13 @@ class FasterWhisperEngine(BaseWhisperEngine):
         self._compute_type: str = _CPU_COMPUTE
 
     def load_model(self, model_name: str, settings: AppSettings) -> None:
-        """모델을 로드합니다. 더미 추론으로 cublas 오류를 사전에 감지하여 폴백합니다."""
         from faster_whisper import WhisperModel
 
         requested_device = _resolve_device(settings.device)
         model_id = _BUILTIN_MODELS.get(model_name, model_name)
 
         if requested_device == "cuda":
-            model, device, compute_type = _load_cuda_with_probe(WhisperModel, model_id)
+            model, device, compute_type = _load_cuda_with_fallback(WhisperModel, model_id)
         else:
             model = WhisperModel(model_id, device="cpu", compute_type=_CPU_COMPUTE)
             device, compute_type = "cpu", _CPU_COMPUTE
@@ -135,38 +133,19 @@ def _is_cublas_error(e: Exception) -> bool:
     return any(k in msg for k in ("cublas", "cublaslt", "cudnn", "dll", "cannot be loaded"))
 
 
-def _probe_model(model) -> bool:
-    """더미 오디오로 실제 추론을 실행해 cublas DLL 오류를 사전 감지합니다."""
-    try:
-        dummy = np.zeros(16000, dtype=np.float32)
-        segments, _ = model.transcribe(dummy, language="en", beam_size=1, best_of=1,
-                                        temperature=0, vad_filter=False)
-        list(segments)  # generator를 완전히 소비하여 실제 추론 실행
-        return True
-    except Exception:
-        return False
-
-
-def _load_cuda_with_probe(WhisperModel, model_id: str):
+def _load_cuda_with_fallback(WhisperModel, model_id: str):
     """
-    CUDA compute type을 순서대로 시도하고, 더미 추론으로 검증합니다.
+    CUDA compute type을 순서대로 시도합니다.
     모두 실패하면 CPU로 폴백합니다.
+    cublas 오류는 전사 시점에 별도로 처리됩니다.
     반환값: (model, device, compute_type)
     """
-    last_error: str = ""
-
     for compute_type in _CUDA_COMPUTE_ORDER:
         try:
             model = WhisperModel(model_id, device="cuda", compute_type=compute_type)
-            # 로드 성공 → 더미 추론으로 실제 CUDA 동작 검증
-            if _probe_model(model):
-                return model, "cuda", compute_type
-            # 더미 추론 실패 (반환값은 True/False) → 다음 compute type 시도
-            last_error = f"CUDA probe failed (compute_type={compute_type})"
+            return model, "cuda", compute_type
         except Exception as e:
-            last_error = str(e)
             if not _is_cublas_error(e):
-                # 모델 파일 없음 등 DLL 무관 오류는 즉시 재발생
                 raise
 
     # 모든 CUDA 시도 실패 → CPU 폴백

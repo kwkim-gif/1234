@@ -71,6 +71,10 @@ class TranscriptionWorker(QThread):
         self._stop_requested = False
         self._load_engine()
 
+        # 모델 로드 중 중지 요청이 들어온 경우 즉시 종료
+        if self._stop_requested:
+            return
+
         while self._queue and not self._stop_requested:
             job = self._queue.popleft()
             # 중지 후 재시작으로 job이 새 워커로 넘어간 경우 스킵
