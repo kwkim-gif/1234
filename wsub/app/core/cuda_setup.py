@@ -1,18 +1,14 @@
 """CUDA runtime DLL registration for Windows.
 
-The hard problem: CTranslate2 loads cublas64_12.dll lazily at inference time
-via LoadLibrary, and it (plus its deps cublasLt64_12.dll / cudart64_12.dll)
-must be resolvable at that moment. Predicting nvidia-wheel paths is fragile.
+Finds cublas64_12.dll / cudnn DLLs from multiple sources in priority order:
+  1. ctranslate2 package dir (CUDA wheel bundles DLLs there)
+  2. nvidia pip wheels (nvidia-cublas-cu12 etc.)
+  3. torch/lib (if CUDA torch is installed)
+  4. CUDA_PATH (system CUDA toolkit)
+  5. Common system paths
 
-Robust strategy:
-1. `import torch` first. The CUDA build of torch (cu121) bundles cublas /
-   cudnn in torch/lib and calls os.add_dll_directory(torch/lib) on import,
-   making those DLLs resolvable process-wide. This alone usually fixes it.
-2. Also glob-search the Python env + CUDA_PATH for the DLLs, register each
-   directory, and ctypes-preload them in dependency order so the modules are
-   already resident when CTranslate2 asks for them.
-
-Must run before any ctranslate2 / faster_whisper inference.
+Then registers dirs via os.add_dll_directory() + PATH, and ctypes-preloads
+the DLLs in dependency order so CTranslate2's lazy LoadLibrary succeeds.
 """
 from __future__ import annotations
 
@@ -26,7 +22,6 @@ _diagnostics: list[str] = []
 
 
 def register_cuda_dll_dirs(log=None) -> list[str]:
-    """Register CUDA DLL dirs and pre-load DLLs. Returns diagnostic lines."""
     global _registered, _diagnostics
     if _registered:
         if log:
@@ -44,78 +39,115 @@ def register_cuda_dll_dirs(log=None) -> list[str]:
         if log:
             log(msg)
 
-    # ── 1. import torch first (registers torch/lib, loads CUDA DLLs) ───
-    torch_lib = None
+    roots: list[str] = []
+
+    # ── Priority 1: ctranslate2 package dir ───────────────────────────
+    # The CUDA wheel of CTranslate2 bundles cublas64_12.dll inside its package.
     try:
-        import torch  # noqa: F401
-        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-        cuda_ok = torch.cuda.is_available()
-        _emit(f"[CUDA] torch {torch.__version__} import됨 (cuda={cuda_ok})")
-        if torch_lib and os.path.isdir(torch_lib):
+        import ctranslate2 as _ct2
+        ct2_dir = os.path.dirname(_ct2.__file__)
+        roots.append(ct2_dir)
+        _emit(f"[CUDA] ctranslate2 {_ct2.__version__} dir: {ct2_dir}")
+        devs = _ct2.get_cuda_device_count()
+        _emit(f"[CUDA] ctranslate2 CUDA device count: {devs}")
+    except Exception as e:
+        _emit(f"[CUDA] ctranslate2 import 실패: {e}")
+
+    # ── Priority 2: nvidia pip wheels ─────────────────────────────────
+    try:
+        import nvidia as _nv
+        nv_base = os.path.dirname(_nv.__file__)
+        for sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin",
+                    "cublas", "cudnn", "cuda_runtime"):
+            p = os.path.join(nv_base, sub)
+            if os.path.isdir(p):
+                roots.append(p)
+        _emit(f"[CUDA] nvidia wheel 발견: {nv_base}")
+    except Exception:
+        pass
+
+    # ── Priority 3: torch/lib ─────────────────────────────────────────
+    try:
+        import torch as _torch
+        is_cuda = "+cu" in _torch.__version__ or _torch.cuda.is_available()
+        _emit(f"[CUDA] torch {_torch.__version__} (cuda={is_cuda})")
+        if not is_cuda:
+            _emit("[CUDA] ⚠️ torch가 CPU 버전입니다. reinstall_cuda_run.bat 재실행 필요")
+        tlib = os.path.join(os.path.dirname(_torch.__file__), "lib")
+        if os.path.isdir(tlib):
+            roots.append(tlib)
             try:
-                os.add_dll_directory(torch_lib)  # type: ignore[attr-defined]
+                os.add_dll_directory(tlib)  # type: ignore[attr-defined]
             except Exception:
                 pass
-            os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+            os.environ["PATH"] = tlib + os.pathsep + os.environ.get("PATH", "")
     except Exception as e:
         _emit(f"[CUDA] torch import 실패: {e}")
 
-    # ── 2. Collect search roots ───────────────────────────────────────
-    roots: list[str] = []
-    if torch_lib and os.path.isdir(torch_lib):
-        roots.append(torch_lib)
-    for r in [sys.prefix, os.path.dirname(sys.executable)]:
-        if r and os.path.isdir(r):
-            roots.append(r)
+    # ── Priority 4: CUDA_PATH (system toolkit) ────────────────────────
     cuda_path = os.environ.get("CUDA_PATH", "")
     if cuda_path and os.path.isdir(cuda_path):
+        roots.append(os.path.join(cuda_path, "bin"))
         roots.append(cuda_path)
-    for p in [r"C:\Program Files\NVIDIA GPU Computing Toolkit",
+        _emit(f"[CUDA] CUDA_PATH: {cuda_path}")
+
+    # ── Priority 5: common system paths ──────────────────────────────
+    for p in [sys.prefix, os.path.dirname(sys.executable),
+              r"C:\Program Files\NVIDIA GPU Computing Toolkit",
               r"C:\Windows\System32"]:
-        if os.path.isdir(p):
+        if p and os.path.isdir(p):
             roots.append(p)
 
-    # ── 3. Find DLL files ─────────────────────────────────────────────
+    # ── Find DLL files ────────────────────────────────────────────────
     target_dlls = [
         "cudart64_12.dll",
-        "cublas64_12.dll",
-        "cublasLt64_12.dll",
+        "cublas64_12.dll", "cublasLt64_12.dll",
         "cudnn64_8.dll", "cudnn_ops_infer64_8.dll", "cudnn_cnn_infer64_8.dll",
         "cudnn64_9.dll", "cudnn_ops64_9.dll", "cudnn_cnn64_9.dll",
     ]
     found_dlls: dict[str, str] = {}
     for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
         for dll_name in target_dlls:
             if dll_name in found_dlls:
                 continue
+            # Check the directory itself first (no recursion for speed)
+            direct = os.path.join(root, dll_name)
+            if os.path.isfile(direct):
+                found_dlls[dll_name] = direct
+                continue
+            # Then recursive glob (for nested like Lib/site-packages/...)
             matches = glob.glob(os.path.join(root, "**", dll_name), recursive=True)
             if matches:
                 found_dlls[dll_name] = matches[0]
 
-    # ── 4. Register found directories ─────────────────────────────────
-    added: set[str] = set()
+    if "cublas64_12.dll" in found_dlls:
+        _emit(f"[CUDA] cublas64_12.dll 발견: {found_dlls['cublas64_12.dll']}")
+    else:
+        _emit("[CUDA] ⚠️ cublas64_12.dll 없음 — reinstall_cuda_run.bat 재실행 필요")
+
+    # ── Register directories ──────────────────────────────────────────
+    added_dirs: set[str] = set()
     for path in found_dlls.values():
         d = os.path.dirname(path)
-        if d in added:
+        if d in added_dirs:
             continue
         try:
             os.add_dll_directory(d)  # type: ignore[attr-defined]
         except Exception:
             pass
         os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-        added.add(d)
+        added_dirs.add(d)
 
-    # ── 5. ctypes pre-load in dependency order ────────────────────────
-    if "cublas64_12.dll" in found_dlls:
-        _emit(f"[CUDA] cublas 발견: {found_dlls['cublas64_12.dll']}")
-    else:
-        _emit("[CUDA] ⚠️ cublas64_12.dll 을 찾지 못했습니다. "
-              "torch(cu121) 또는 nvidia-cublas-cu12 설치를 확인하세요.")
-
-    for dll_name in ["cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll",
-                     "cudnn64_8.dll", "cudnn_ops_infer64_8.dll",
-                     "cudnn_cnn_infer64_8.dll", "cudnn64_9.dll",
-                     "cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"]:
+    # ── ctypes pre-load in dependency order ───────────────────────────
+    preload_order = [
+        "cudart64_12.dll",
+        "cublasLt64_12.dll", "cublas64_12.dll",
+        "cudnn64_8.dll", "cudnn_ops_infer64_8.dll", "cudnn_cnn_infer64_8.dll",
+        "cudnn64_9.dll", "cudnn_ops64_9.dll", "cudnn_cnn64_9.dll",
+    ]
+    for dll_name in preload_order:
         if dll_name in found_dlls:
             try:
                 ctypes.CDLL(found_dlls[dll_name])
