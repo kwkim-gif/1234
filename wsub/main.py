@@ -2,7 +2,28 @@
 """W-Sub 진입점 — 환경 검사 후 GUI 실행."""
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
+
+
+def _setup_frozen_paths() -> None:
+    """PyInstaller onedir EXE 실행 시 경로를 올바르게 설정합니다."""
+    if not getattr(sys, "frozen", False):
+        return
+
+    # EXE 디렉토리를 PATH 앞에 추가 (번들된 ffmpeg 인식)
+    exe_dir = Path(sys.executable).parent
+    os.environ["PATH"] = str(exe_dir) + os.pathsep + os.environ.get("PATH", "")
+
+    # PySide6 Qt 플러그인 경로 설정
+    qt_plugins = exe_dir / "plugins"
+    if qt_plugins.exists():
+        os.environ["QT_PLUGIN_PATH"] = str(qt_plugins)
+
+    # HuggingFace 캐시를 사용자 홈 디렉토리로 유지
+    if "HF_HOME" not in os.environ:
+        os.environ["HF_HOME"] = str(Path.home() / ".cache" / "huggingface")
 
 
 def _check_python_version() -> None:
@@ -43,6 +64,7 @@ def _print_check(label: str, ok: bool, detail: str) -> None:
 
 
 def main() -> None:
+    _setup_frozen_paths()
     _check_python_version()
     _run_startup_checks()
 
