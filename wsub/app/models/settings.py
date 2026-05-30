@@ -13,6 +13,10 @@ class WhisperSettings:
     condition_on_previous_text: bool = True
     word_timestamps: bool = False
     vad_filter: bool = True
+    # 할루시네이션(반복 문장) 억제 파라미터
+    repetition_penalty: float = 1.0
+    no_repeat_ngram_size: int = 0
+    hallucination_silence_threshold: float = 0.0  # 0 = 비활성
 
 
 @dataclass
@@ -33,5 +37,6 @@ class AppSettings:
     output_format: str = "srt"
     output_dir: str = ""
     dedup_segments: bool = True   # 중복 자막 제거 여부
+    hallucination_level: str = "medium"  # off / weak / medium / strong
     whisper: WhisperSettings = field(default_factory=WhisperSettings)
     audio: AudioSettings = field(default_factory=AudioSettings)

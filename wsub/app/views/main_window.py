@@ -110,13 +110,23 @@ class MainWindow(QMainWindow):
         self._cb_language.setMinimumWidth(140)
         layout.addWidget(self._cb_language)
 
-        # 장치 선택
-        layout.addWidget(QLabel("장치:"))
-        self._cb_device = QComboBox()
-        self._cb_device.addItems(["auto", "cuda", "cpu"])
-        self._cb_device.setCurrentText(s.device)
-        self._cb_device.setMinimumWidth(70)
-        layout.addWidget(self._cb_device)
+        # 할루시네이션(반복 문장) 억제 — 무음 구간 동일 문장 반복 방지
+        layout.addWidget(QLabel("반복 억제:"))
+        self._cb_hallucination = QComboBox()
+        self._cb_hallucination.addItem("끔",   userData="off")
+        self._cb_hallucination.addItem("약하게", userData="weak")
+        self._cb_hallucination.addItem("보통",  userData="medium")
+        self._cb_hallucination.addItem("강하게", userData="strong")
+        for i in range(self._cb_hallucination.count()):
+            if self._cb_hallucination.itemData(i) == s.hallucination_level:
+                self._cb_hallucination.setCurrentIndex(i)
+                break
+        self._cb_hallucination.setMinimumWidth(90)
+        self._cb_hallucination.setToolTip(
+            "무음 구간에서 같은 문장이 반복되는 할루시네이션을 억제합니다.\n"
+            "강하게 설정할수록 반복을 더 적극적으로 제거합니다."
+        )
+        layout.addWidget(self._cb_hallucination)
 
         # 노이즈 제거
         layout.addWidget(QLabel("노이즈 제거:"))
@@ -144,7 +154,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._lbl_gpu_info)
 
         # 드롭다운 변경 시 즉시 설정 반영
-        for cb in (self._cb_model, self._cb_language, self._cb_device,
+        for cb in (self._cb_model, self._cb_language, self._cb_hallucination,
                    self._cb_noise, self._cb_dedup):
             cb.currentIndexChanged.connect(self._sync_settings_from_bar)
 
@@ -283,7 +293,7 @@ class MainWindow(QMainWindow):
             current,
             model_name=self._cb_model.currentData(),
             language=self._cb_language.currentData(),
-            device=self._cb_device.currentText(),
+            hallucination_level=self._cb_hallucination.currentData(),
             dedup_segments=bool(self._cb_dedup.currentData()),
             audio=new_audio,
         )
@@ -300,7 +310,10 @@ class MainWindow(QMainWindow):
             if self._cb_language.itemData(i) == s.language:
                 self._cb_language.setCurrentIndex(i)
                 break
-        self._cb_device.setCurrentText(s.device)
+        for i in range(self._cb_hallucination.count()):
+            if self._cb_hallucination.itemData(i) == s.hallucination_level:
+                self._cb_hallucination.setCurrentIndex(i)
+                break
         self._cb_noise.setCurrentIndex(1 if s.audio.noise_reduction else 0)
 
     # ── 헬퍼 ──────────────────────────────────────────────────────

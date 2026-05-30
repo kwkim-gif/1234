@@ -37,6 +37,8 @@ class FasterWhisperEngine(BaseWhisperEngine):
         self._compute_type: str = _CPU_COMPUTE
 
     def load_model(self, model_name: str, settings: AppSettings) -> None:
+        from app.core.cuda_setup import register_cuda_dll_dirs
+        register_cuda_dll_dirs()  # cublas/cudnn DLL 경로 등록 (faster_whisper import 전)
         from faster_whisper import WhisperModel
 
         requested_device = _resolve_device(settings.device)
@@ -66,6 +68,9 @@ class FasterWhisperEngine(BaseWhisperEngine):
         lang = None if language == "auto" else language
         ws = settings.whisper
 
+        # 할루시네이션 억제 프리셋 적용 (모델바 드롭다운에서 선택)
+        hall = _hallucination_params(getattr(settings, "hallucination_level", "medium"))
+
         transcribe_kwargs = dict(
             language=lang,
             temperature=ws.temperature,
@@ -73,10 +78,18 @@ class FasterWhisperEngine(BaseWhisperEngine):
             best_of=ws.best_of,
             no_speech_threshold=ws.no_speech_threshold,
             compression_ratio_threshold=ws.compression_ratio_threshold,
-            condition_on_previous_text=ws.condition_on_previous_text,
+            condition_on_previous_text=hall.get(
+                "condition_on_previous_text", ws.condition_on_previous_text
+            ),
             word_timestamps=ws.word_timestamps,
-            vad_filter=ws.vad_filter,
+            vad_filter=hall.get("vad_filter", ws.vad_filter),
+            repetition_penalty=hall["repetition_penalty"],
+            no_repeat_ngram_size=hall["no_repeat_ngram_size"],
         )
+        if hall["hallucination_silence_threshold"] > 0:
+            transcribe_kwargs["hallucination_silence_threshold"] = (
+                hall["hallucination_silence_threshold"]
+            )
 
         try:
             yield from self._do_transcribe(audio_path, transcribe_kwargs)
@@ -109,6 +122,41 @@ class FasterWhisperEngine(BaseWhisperEngine):
 
 
 # ── 모듈 레벨 헬퍼 ────────────────────────────────────────────────────────
+
+def _hallucination_params(level: str) -> dict:
+    """할루시네이션 억제 레벨을 faster-whisper 파라미터로 변환합니다.
+
+    무음 구간에서 동일 문장이 반복되는 현상을 repetition_penalty와
+    no_repeat_ngram_size, hallucination_silence_threshold로 억제합니다.
+    """
+    presets = {
+        "off": {
+            "repetition_penalty": 1.0,
+            "no_repeat_ngram_size": 0,
+            "hallucination_silence_threshold": 0.0,
+        },
+        "weak": {
+            "repetition_penalty": 1.1,
+            "no_repeat_ngram_size": 3,
+            "hallucination_silence_threshold": 0.0,
+        },
+        "medium": {
+            "repetition_penalty": 1.2,
+            "no_repeat_ngram_size": 2,
+            "hallucination_silence_threshold": 2.0,
+            "condition_on_previous_text": False,
+            "vad_filter": True,
+        },
+        "strong": {
+            "repetition_penalty": 1.3,
+            "no_repeat_ngram_size": 2,
+            "hallucination_silence_threshold": 1.0,
+            "condition_on_previous_text": False,
+            "vad_filter": True,
+        },
+    }
+    return presets.get(level, presets["medium"])
+
 
 def _resolve_device(device: str) -> str:
     if device != "auto":

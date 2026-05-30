@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import traceback
 import uuid
 from collections import deque
@@ -118,6 +119,7 @@ class TranscriptionWorker(QThread):
             self.log_message.emit(f"[전사 중] {job.file_path.name}")
             segments: list[dict] = []
             total_duration = self._ffmpeg.get_duration(job.file_path) or 1.0
+            last_emit = 0.0
 
             for seg in self._engine.transcribe(
                 str(tmp_audio), self._settings.language, self._settings
@@ -131,7 +133,11 @@ class TranscriptionWorker(QThread):
                 self.segment_ready.emit(seg)
                 progress = min(seg["end"] / total_duration, 1.0)
                 job.progress = progress
-                self.progress_updated.emit(job.id, progress)
+                # GUI 이벤트 루프 포화를 막기 위해 진행률 신호를 throttle (최대 ~5회/초)
+                now = time.monotonic()
+                if progress >= 1.0 or now - last_emit >= 0.2:
+                    self.progress_updated.emit(job.id, progress)
+                    last_emit = now
 
             if getattr(self._settings, "dedup_segments", True):
                 segments = remove_duplicate_segments(segments)
