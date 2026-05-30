@@ -103,8 +103,9 @@ class TranscriptionWorker(QThread):
                 job.progress = progress
                 self.progress_updated.emit(job.id, progress)
 
-            # 중복 제거 및 저장
-            segments = remove_duplicate_segments(segments)
+            # 설정에 따라 중복 제거 적용
+            if getattr(self._settings, "dedup_segments", True):
+                segments = remove_duplicate_segments(segments)
             output_path = build_output_path(
                 job.file_path, self._settings.output_dir,
                 self._settings.language, self._settings.output_format,

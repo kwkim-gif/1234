@@ -20,6 +20,7 @@ class QueueViewModel(QObject):
     log_appended = Signal(str)
     error_appended = Signal(str)
     overall_progress_changed = Signal(float, str)
+    segment_ready = Signal(dict)  # 실시간 전사 세그먼트
 
     def __init__(self, service: TranscriptionService, parent=None) -> None:
         super().__init__(parent)
@@ -65,10 +66,23 @@ class QueueViewModel(QObject):
 
     # ── 전사 시작/중지 ────────────────────────────────────────────
     def start_transcription(self, settings: AppSettings) -> None:
-        """대기 중인 Job들의 전사를 시작합니다."""
+        """대기 중 또는 재시도 대상 Job들의 전사를 시작합니다.
+
+        실패/취소된 Job은 PENDING으로 초기화하여 재시도합니다.
+        """
+        # 실패·취소된 Job을 PENDING으로 리셋하여 재시도 허용
+        for job in self._jobs:
+            if job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                job.status = JobStatus.PENDING
+                job.progress = 0.0
+                job.error_message = ""
+
         pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
         if not pending:
             return
+
+        self.jobs_changed.emit()
+
         self._service.start(
             jobs=pending,
             settings=settings,
@@ -76,11 +90,18 @@ class QueueViewModel(QObject):
             on_completed=self._on_completed,
             on_failed=self._on_failed,
             on_log=self._on_log,
-            on_segment=lambda _: None,
+            on_segment=self._on_segment,
         )
 
     def stop_transcription(self) -> None:
         self._service.stop()
+
+    def startable_count(self) -> int:
+        """시작 가능한 Job 수 (대기중 + 실패 + 취소)."""
+        return sum(
+            1 for j in self._jobs
+            if j.status in (JobStatus.PENDING, JobStatus.FAILED, JobStatus.CANCELLED)
+        )
 
     # ── 조회 ──────────────────────────────────────────────────────
     def jobs(self) -> list[Job]:
@@ -106,6 +127,9 @@ class QueueViewModel(QObject):
 
     def _on_log(self, message: str) -> None:
         self.log_appended.emit(message)
+
+    def _on_segment(self, segment: dict) -> None:
+        self.segment_ready.emit(segment)
 
     def _update_overall_progress(self) -> None:
         if not self._jobs:

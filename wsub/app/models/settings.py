@@ -32,5 +32,6 @@ class AppSettings:
     device: str = "auto"
     output_format: str = "srt"
     output_dir: str = ""
+    dedup_segments: bool = True   # 중복 자막 제거 여부
     whisper: WhisperSettings = field(default_factory=WhisperSettings)
     audio: AudioSettings = field(default_factory=AudioSettings)

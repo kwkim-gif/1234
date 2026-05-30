@@ -35,10 +35,8 @@ def build_output_path(
     language: str,
     fmt: str,
 ) -> Path:
-    """출력 파일 경로를 결정합니다. (원본파일명_언어코드.srt)"""
-    lang_code = language if language != "auto" else "auto"
-    stem = source_path.stem
-    filename = f"{stem}_{lang_code}.{fmt}"
+    """출력 파일 경로를 결정합니다. 원본 파일명 그대로 확장자만 변경합니다."""
+    filename = f"{source_path.stem}.{fmt}"
     if output_dir:
         return Path(output_dir) / filename
     return source_path.parent / filename
