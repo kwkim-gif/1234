@@ -48,6 +48,12 @@ jobs:
           pip install PySide6 faster-whisper openai-whisper transformers `
             huggingface-hub ffmpeg-python numpy psutil requests pyinstaller
 
+      - name: CUDA 12 런타임 DLL 설치 (GPU 가속용 번들)
+        # ctranslate2 wheel은 cublas/cudnn DLL을 포함하지 않으므로
+        # nvidia 휠에서 DLL을 받아 EXE에 번들한다. (CI에 GPU가 없어도 DLL은 설치됨)
+        run: |
+          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+
       - name: FFmpeg 설치
         uses: FedericoCarboni/setup-ffmpeg@v3
         id: setup-ffmpeg

@@ -41,6 +41,19 @@ def register_cuda_dll_dirs(log=None) -> list[str]:
 
     roots: list[str] = []
 
+    # ── Priority 0: frozen EXE bundle dir (_internal) ─────────────────
+    # PyInstaller가 번들한 cublas/cudnn DLL이 여기에 위치한다.
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass and os.path.isdir(meipass):
+            roots.append(meipass)
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.isdir(exe_dir):
+            roots.append(exe_dir)
+            internal = os.path.join(exe_dir, "_internal")
+            if os.path.isdir(internal):
+                roots.append(internal)
+
     # ── Priority 1: ctranslate2 package dir ───────────────────────────
     # The CUDA wheel of CTranslate2 bundles cublas64_12.dll inside its package.
     try:
@@ -72,7 +85,7 @@ def register_cuda_dll_dirs(log=None) -> list[str]:
         is_cuda = "+cu" in _torch.__version__ or _torch.cuda.is_available()
         _emit(f"[CUDA] torch {_torch.__version__} (cuda={is_cuda})")
         if not is_cuda:
-            _emit("[CUDA] ⚠️ torch가 CPU 버전입니다. reinstall_cuda_run.bat 재실행 필요")
+            _emit("[CUDA] torch는 CPU 빌드 (전사는 ctranslate2 GPU 백엔드를 사용하므로 무관)")
         tlib = os.path.join(os.path.dirname(_torch.__file__), "lib")
         if os.path.isdir(tlib):
             roots.append(tlib)

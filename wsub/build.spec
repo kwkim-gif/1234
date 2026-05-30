@@ -40,6 +40,20 @@ try:
 except ImportError:
     pass
 
+# ── CUDA 12 런타임 DLL (cublas / cudnn) — GPU 가속 필수 ────────────
+# ctranslate2 wheel은 cublas64_12.dll / cudnn DLL을 포함하지 않으므로
+# nvidia pip 휠에서 직접 수집하여 _internal 루트에 둔다.
+# (런타임에 cuda_setup이 이 위치를 찾아 preload)
+for _nv_sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin"):
+    try:
+        import nvidia
+        _nv_dir = Path(nvidia.__file__).parent / _nv_sub
+        if _nv_dir.exists():
+            for _dll in _nv_dir.glob("*.dll"):
+                binaries.append((str(_dll), "."))
+    except ImportError:
+        pass
+
 # ── faster_whisper 에셋 (tokenizer vocab 등) ──────────────────────
 fw_datas: list[tuple[str, str]] = []
 try:

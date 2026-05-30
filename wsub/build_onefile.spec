@@ -28,6 +28,17 @@ try:
 except ImportError:
     pass
 
+# CUDA 12 런타임 DLL (cublas / cudnn) — GPU 가속 필수
+for _nv_sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin"):
+    try:
+        import nvidia
+        _nv_dir = Path(nvidia.__file__).parent / _nv_sub
+        if _nv_dir.exists():
+            for _dll in _nv_dir.glob("*.dll"):
+                binaries.append((str(_dll), "."))
+    except ImportError:
+        pass
+
 qt_datas: list[tuple[str, str]] = []
 try:
     from PySide6 import __file__ as pyside6_init
