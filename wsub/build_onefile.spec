@@ -29,15 +29,17 @@ except ImportError:
     pass
 
 # CUDA 12 런타임 DLL (cublas / cudnn) — GPU 가속 필수
-for _nv_sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin"):
-    try:
-        import nvidia
-        _nv_dir = Path(nvidia.__file__).parent / _nv_sub
-        if _nv_dir.exists():
-            for _dll in _nv_dir.glob("*.dll"):
-                binaries.append((str(_dll), "."))
-    except ImportError:
-        pass
+# nvidia는 네임스페이스 패키지라 __file__이 None일 수 있으므로 __path__ 사용.
+try:
+    import nvidia
+    for _nv_root in [Path(p) for p in getattr(nvidia, "__path__", [])]:
+        for _nv_sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin"):
+            _nv_dir = _nv_root / _nv_sub
+            if _nv_dir.exists():
+                for _dll in _nv_dir.glob("*.dll"):
+                    binaries.append((str(_dll), "."))
+except Exception:
+    pass
 
 qt_datas: list[tuple[str, str]] = []
 try:

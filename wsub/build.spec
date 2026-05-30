@@ -44,15 +44,18 @@ except ImportError:
 # ctranslate2 wheel은 cublas64_12.dll / cudnn DLL을 포함하지 않으므로
 # nvidia pip 휠에서 직접 수집하여 _internal 루트에 둔다.
 # (런타임에 cuda_setup이 이 위치를 찾아 preload)
-for _nv_sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin"):
-    try:
-        import nvidia
-        _nv_dir = Path(nvidia.__file__).parent / _nv_sub
-        if _nv_dir.exists():
-            for _dll in _nv_dir.glob("*.dll"):
-                binaries.append((str(_dll), "."))
-    except ImportError:
-        pass
+# nvidia는 네임스페이스 패키지라 __file__이 None일 수 있으므로 __path__ 사용.
+try:
+    import nvidia
+    _nv_roots = [Path(p) for p in getattr(nvidia, "__path__", [])]
+    for _nv_root in _nv_roots:
+        for _nv_sub in ("cublas/bin", "cudnn/bin", "cuda_runtime/bin"):
+            _nv_dir = _nv_root / _nv_sub
+            if _nv_dir.exists():
+                for _dll in _nv_dir.glob("*.dll"):
+                    binaries.append((str(_dll), "."))
+except Exception:
+    pass
 
 # ── faster_whisper 에셋 (tokenizer vocab 등) ──────────────────────
 fw_datas: list[tuple[str, str]] = []
