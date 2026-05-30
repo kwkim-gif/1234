@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView, QHeaderView, QMenu, QTableWidget,
     QTableWidgetItem,
@@ -29,6 +29,7 @@ class FileTable(QTableWidget):
     move_up_requested = Signal(int)
     move_down_requested = Signal(int)
     remove_requested = Signal(int)
+    remove_multiple_requested = Signal(list)
     open_output_requested = Signal(int)
     open_folder_requested = Signal(int)
 
@@ -36,6 +37,7 @@ class FileTable(QTableWidget):
         super().__init__(0, len(_COLUMNS), parent)
         self.setHorizontalHeaderLabels(_COLUMNS)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
@@ -92,30 +94,45 @@ class FileTable(QTableWidget):
         item.setTextAlignment(Qt.AlignCenter)
         self.setItem(row, 5, item)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected = sorted({idx.row() for idx in self.selectedIndexes()})
+            if selected:
+                self.remove_multiple_requested.emit(selected)
+                return
+        super().keyPressEvent(event)
+
+    def _selected_rows(self) -> list[int]:
+        return sorted({idx.row() for idx in self.selectedIndexes()})
+
     def _show_context_menu(self, pos) -> None:
         row = self.rowAt(pos.y())
         if row < 0:
             return
 
-        menu = QMenu(self)
-        act_up = menu.addAction("위로 이동")
-        act_down = menu.addAction("아래로 이동")
-        menu.addSeparator()
-        act_remove = menu.addAction("제거")
-        menu.addSeparator()
-        act_open_file = menu.addAction("출력 파일 열기")
-        act_open_folder = menu.addAction("출력 폴더 열기")
+        selected = self._selected_rows()
+        multi = len(selected) > 1
 
-        # 완료된 항목만 출력 파일 열기 활성화
-        # (활성화 여부는 외부에서 Job 상태로 판단)
+        menu = QMenu(self)
+        act_up = menu.addAction("위로 이동") if not multi else None
+        act_down = menu.addAction("아래로 이동") if not multi else None
+        menu.addSeparator()
+        act_remove = menu.addAction(f"제거 ({len(selected)}개)" if multi else "제거")
+        menu.addSeparator()
+        act_open_file = menu.addAction("출력 파일 열기") if not multi else None
+        act_open_folder = menu.addAction("출력 폴더 열기") if not multi else None
+
         action = menu.exec(self.viewport().mapToGlobal(pos))
-        if action == act_up:
+        if action == act_up and act_up:
             self.move_up_requested.emit(row)
-        elif action == act_down:
+        elif action == act_down and act_down:
             self.move_down_requested.emit(row)
         elif action == act_remove:
-            self.remove_requested.emit(row)
-        elif action == act_open_file:
+            if multi:
+                self.remove_multiple_requested.emit(selected)
+            else:
+                self.remove_requested.emit(row)
+        elif action == act_open_file and act_open_file:
             self.open_output_requested.emit(row)
-        elif action == act_open_folder:
+        elif action == act_open_folder and act_open_folder:
             self.open_folder_requested.emit(row)

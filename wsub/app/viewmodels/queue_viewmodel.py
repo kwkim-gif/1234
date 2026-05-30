@@ -49,6 +49,13 @@ class QueueViewModel(QObject):
             self._jobs.pop(index)
             self.jobs_changed.emit()
 
+    def remove_jobs(self, indices: list[int]) -> None:
+        """여러 인덱스를 한 번에 삭제합니다 (역순으로 삭제해 인덱스 오류 방지)."""
+        for i in sorted(set(indices), reverse=True):
+            if 0 <= i < len(self._jobs):
+                self._jobs.pop(i)
+        self.jobs_changed.emit()
+
     def move_up(self, index: int) -> None:
         if index > 0:
             self._jobs[index - 1], self._jobs[index] = self._jobs[index], self._jobs[index - 1]
@@ -144,7 +151,8 @@ class QueueViewModel(QObject):
         if any(j.status != JobStatus.COMPLETED for j in self._jobs):
             return
         self._jobs.clear()
-        self._service.reset()
+        # service.reset()은 모델 언로드 중인 워커를 wait()해 UI를 블로킹할 수 있으므로
+        # 여기서는 호출하지 않는다. 다음 start()의 _teardown_worker()에서 정리된다.
         self.jobs_changed.emit()
         self.overall_progress_changed.emit(0.0, "")
         self.log_appended.emit("[초기화] 목록이 초기화되었습니다. 새 파일을 추가하세요.")

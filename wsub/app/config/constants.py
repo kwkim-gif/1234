@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "W-Sub"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 VIDEO_EXTENSIONS: set[str] = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".asf",

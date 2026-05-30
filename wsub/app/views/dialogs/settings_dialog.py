@@ -55,8 +55,12 @@ class SettingsDialog(QDialog):
         self._le_output_dir.setPlaceholderText("(원본 파일과 같은 폴더)")
         btn_browse = QPushButton("찾아보기")
         btn_browse.clicked.connect(self._browse_output_dir)
+        btn_reset_dir = QPushButton("초기화")
+        btn_reset_dir.setToolTip("출력 폴더를 원본파일 위치로 초기화합니다.")
+        btn_reset_dir.clicked.connect(lambda: self._le_output_dir.clear())
         out_row.addWidget(self._le_output_dir)
         out_row.addWidget(btn_browse)
+        out_row.addWidget(btn_reset_dir)
         form.addRow("출력 폴더:", out_row)
 
         self._tabs.addTab(w, "General")

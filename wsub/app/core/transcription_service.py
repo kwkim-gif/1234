@@ -216,7 +216,14 @@ class TranscriptionService:
         return worker
 
     def stop(self) -> None:
-        self._teardown_worker()
+        """중지 요청만 보내고 즉시 반환합니다. 스레드 정리는 다음 start()에서 수행됩니다."""
+        if not self._worker:
+            return
+        try:
+            self._worker.disconnect()
+        except RuntimeError:
+            pass
+        self._worker.request_stop()
 
     def is_running(self) -> bool:
         return bool(self._worker and self._worker.isRunning())

@@ -5,14 +5,13 @@ from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from app.config.constants import APP_NAME, APP_VERSION, SUPPORTED_LANGUAGES, SUPPORTED_MODELS
 from app.core.ffmpeg_handler import FFmpegHandler
 from app.models.job import JobStatus
-from app.views.dialogs.model_dialog import ModelDialog
 from app.views.dialogs.settings_dialog import SettingsDialog
 from app.views.widgets.drop_area import DropArea
 from app.views.widgets.file_table import FileTable
@@ -61,12 +60,11 @@ class MainWindow(QMainWindow):
         self._btn_add_folder = self._toolbar_btn("폴더 추가")
         self._btn_output_dir = self._toolbar_btn("출력 폴더")
         self._btn_settings   = self._toolbar_btn("설정")
-        self._btn_models     = self._toolbar_btn("모델 관리")
         self._btn_start      = self._action_btn("▶ 시작", "#2e7d32", "#388e3c")
         self._btn_stop       = self._action_btn("■ 중지",  "#c62828", "#d32f2f")
 
         for btn in (self._btn_add_files, self._btn_add_folder, self._btn_output_dir,
-                    self._btn_settings, self._btn_models):
+                    self._btn_settings):
             layout.addWidget(btn)
         layout.addStretch()
         layout.addWidget(self._btn_start)
@@ -76,18 +74,20 @@ class MainWindow(QMainWindow):
         self._btn_add_folder.clicked.connect(self._on_add_folder)
         self._btn_output_dir.clicked.connect(self._on_set_output_dir)
         self._btn_settings.clicked.connect(self._on_settings)
-        self._btn_models.clicked.connect(self._on_models)
         self._btn_start.clicked.connect(self._on_start)
         self._btn_stop.clicked.connect(self._on_stop)
 
         return layout
 
-    def _build_model_bar(self) -> QHBoxLayout:
-        layout = QHBoxLayout()
+    def _build_model_bar(self) -> QVBoxLayout:
+        vbox = QVBoxLayout()
+        vbox.setSpacing(4)
         s = self._vm.settings()
 
-        # 모델 선택
-        layout.addWidget(QLabel("모델:"))
+        # ── 1행: 모델 / 언어 / 반복억제 / 노이즈제거 / 중복제거 / GPU 정보 ──
+        row1 = QHBoxLayout()
+
+        row1.addWidget(QLabel("모델:"))
         self._cb_model = QComboBox()
         for m in SUPPORTED_MODELS:
             self._cb_model.addItem(m["name"], userData=m["id"])
@@ -96,10 +96,9 @@ class MainWindow(QMainWindow):
                 self._cb_model.setCurrentIndex(i)
                 break
         self._cb_model.setMinimumWidth(180)
-        layout.addWidget(self._cb_model)
+        row1.addWidget(self._cb_model)
 
-        # 언어 선택
-        layout.addWidget(QLabel("언어:"))
+        row1.addWidget(QLabel("언어:"))
         self._cb_language = QComboBox()
         for lang in SUPPORTED_LANGUAGES:
             self._cb_language.addItem(lang["name"], userData=lang["code"])
@@ -108,14 +107,13 @@ class MainWindow(QMainWindow):
                 self._cb_language.setCurrentIndex(i)
                 break
         self._cb_language.setMinimumWidth(140)
-        layout.addWidget(self._cb_language)
+        row1.addWidget(self._cb_language)
 
-        # 할루시네이션(반복 문장) 억제 — 무음 구간 동일 문장 반복 방지
-        layout.addWidget(QLabel("반복 억제:"))
+        row1.addWidget(QLabel("반복 억제:"))
         self._cb_hallucination = QComboBox()
-        self._cb_hallucination.addItem("끔",   userData="off")
+        self._cb_hallucination.addItem("끔",    userData="off")
         self._cb_hallucination.addItem("약하게", userData="weak")
-        self._cb_hallucination.addItem("보통",  userData="medium")
+        self._cb_hallucination.addItem("보통",   userData="medium")
         self._cb_hallucination.addItem("강하게", userData="strong")
         for i in range(self._cb_hallucination.count()):
             if self._cb_hallucination.itemData(i) == s.hallucination_level:
@@ -126,39 +124,62 @@ class MainWindow(QMainWindow):
             "무음 구간에서 같은 문장이 반복되는 할루시네이션을 억제합니다.\n"
             "강하게 설정할수록 반복을 더 적극적으로 제거합니다."
         )
-        layout.addWidget(self._cb_hallucination)
+        row1.addWidget(self._cb_hallucination)
 
-        # 노이즈 제거
-        layout.addWidget(QLabel("노이즈 제거:"))
+        row1.addWidget(QLabel("노이즈 제거:"))
         self._cb_noise = QComboBox()
         self._cb_noise.addItem("OFF", userData=False)
         self._cb_noise.addItem("ON",  userData=True)
         self._cb_noise.setCurrentIndex(1 if s.audio.noise_reduction else 0)
         self._cb_noise.setMinimumWidth(60)
-        layout.addWidget(self._cb_noise)
+        row1.addWidget(self._cb_noise)
 
-        # 중복 텍스트 제거
-        layout.addWidget(QLabel("중복 제거:"))
+        row1.addWidget(QLabel("중복 제거:"))
         self._cb_dedup = QComboBox()
         self._cb_dedup.addItem("ON",  userData=True)
         self._cb_dedup.addItem("OFF", userData=False)
-        self._cb_dedup.setCurrentIndex(0)  # 기본 ON
+        self._cb_dedup.setCurrentIndex(0 if s.dedup_segments else 1)
         self._cb_dedup.setMinimumWidth(60)
-        layout.addWidget(self._cb_dedup)
+        row1.addWidget(self._cb_dedup)
 
-        layout.addStretch()
+        row1.addStretch()
 
-        # GPU 정보 표시
         self._lbl_gpu_info = QLabel("GPU: 감지 중...")
         self._lbl_gpu_info.setStyleSheet("color: #888; font-size: 12px;")
-        layout.addWidget(self._lbl_gpu_info)
+        row1.addWidget(self._lbl_gpu_info)
 
-        # 드롭다운 변경 시 즉시 설정 반영
+        vbox.addLayout(row1)
+
+        # ── 2행: VAD 필터 / 음성 강조 필터 체크박스 ──────────────────
+        row2 = QHBoxLayout()
+
+        self._chk_vad = QCheckBox("VAD 필터 사용")
+        self._chk_vad.setChecked(s.whisper.vad_filter)
+        self._chk_vad.setToolTip(
+            "음성 활동 감지(VAD) 필터를 활성화합니다.\n"
+            "무음 구간을 건너뛰어 전사 속도와 정확도를 높입니다."
+        )
+        row2.addWidget(self._chk_vad)
+
+        self._chk_voice_enh = QCheckBox("음성 강조 필터 적용")
+        self._chk_voice_enh.setChecked(s.audio.voice_enhancement)
+        self._chk_voice_enh.setToolTip(
+            "FFmpeg 음성 강조 필터(highpass/lowpass/equalizer)를 적용합니다.\n"
+            "배경 소음이 많은 경우 전사 정확도를 높일 수 있습니다."
+        )
+        row2.addWidget(self._chk_voice_enh)
+
+        row2.addStretch()
+        vbox.addLayout(row2)
+
+        # 드롭다운·체크박스 변경 시 즉시 설정 반영
         for cb in (self._cb_model, self._cb_language, self._cb_hallucination,
                    self._cb_noise, self._cb_dedup):
             cb.currentIndexChanged.connect(self._sync_settings_from_bar)
+        for chk in (self._chk_vad, self._chk_voice_enh):
+            chk.stateChanged.connect(self._sync_settings_from_bar)
 
-        return layout
+        return vbox
 
     def _build_drop_area(self) -> DropArea:
         self._drop_area = DropArea()
@@ -172,6 +193,7 @@ class MainWindow(QMainWindow):
         self._file_table.move_up_requested.connect(self._vm.queue_vm.move_up)
         self._file_table.move_down_requested.connect(self._vm.queue_vm.move_down)
         self._file_table.remove_requested.connect(self._vm.queue_vm.remove_job)
+        self._file_table.remove_multiple_requested.connect(self._vm.queue_vm.remove_jobs)
         self._file_table.open_output_requested.connect(self._open_output_file)
         self._file_table.open_folder_requested.connect(self._open_output_folder)
         return self._file_table
@@ -239,19 +261,30 @@ class MainWindow(QMainWindow):
             self._vm.queue_vm.add_files(files)
 
     def _on_set_output_dir(self) -> None:
+        current = self._vm.settings().output_dir
+        if current:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("출력 폴더 설정")
+            msg.setText(f"현재 출력 폴더:\n{current}")
+            btn_change = msg.addButton("폴더 변경", QMessageBox.AcceptRole)
+            btn_reset  = msg.addButton("원본파일 위치로 초기화", QMessageBox.ResetRole)
+            msg.addButton("취소", QMessageBox.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_reset:
+                self._vm.apply_settings(replace(self._vm.settings(), output_dir=""))
+                return
+            elif clicked != btn_change:
+                return
         folder = QFileDialog.getExistingDirectory(self, "출력 폴더 선택")
         if folder:
-            s = replace(self._vm.settings(), output_dir=folder)
-            self._vm.apply_settings(s)
+            self._vm.apply_settings(replace(self._vm.settings(), output_dir=folder))
 
     def _on_settings(self) -> None:
         dlg = SettingsDialog(self._vm.settings(), self._system_info, self)
         if dlg.exec():
             self._vm.apply_settings(dlg.get_settings())
             self._sync_bar_from_settings()
-
-    def _on_models(self) -> None:
-        ModelDialog(self._vm.model_vm, self).exec()
 
     def _on_start(self) -> None:
         if self._vm.queue_vm.startable_count() == 0:
@@ -283,11 +316,16 @@ class MainWindow(QMainWindow):
 
     # ── 설정 동기화 ───────────────────────────────────────────────
     def _sync_settings_from_bar(self) -> None:
-        """모델바 드롭다운 값을 settings에 반영합니다."""
+        """모델바 드롭다운/체크박스 값을 settings에 반영합니다."""
         current = self._vm.settings()
+        new_whisper = replace(
+            current.whisper,
+            vad_filter=self._chk_vad.isChecked(),
+        )
         new_audio = replace(
             current.audio,
             noise_reduction=bool(self._cb_noise.currentData()),
+            voice_enhancement=self._chk_voice_enh.isChecked(),
         )
         new_settings = replace(
             current,
@@ -295,12 +333,13 @@ class MainWindow(QMainWindow):
             language=self._cb_language.currentData(),
             hallucination_level=self._cb_hallucination.currentData(),
             dedup_segments=bool(self._cb_dedup.currentData()),
+            whisper=new_whisper,
             audio=new_audio,
         )
         self._vm.apply_settings(new_settings)
 
     def _sync_bar_from_settings(self) -> None:
-        """settings 값을 모델바 드롭다운에 반영합니다."""
+        """settings 값을 모델바 드롭다운/체크박스에 반영합니다."""
         s = self._vm.settings()
         for i in range(self._cb_model.count()):
             if self._cb_model.itemData(i) == s.model_name:
@@ -315,6 +354,8 @@ class MainWindow(QMainWindow):
                 self._cb_hallucination.setCurrentIndex(i)
                 break
         self._cb_noise.setCurrentIndex(1 if s.audio.noise_reduction else 0)
+        self._chk_vad.setChecked(s.whisper.vad_filter)
+        self._chk_voice_enh.setChecked(s.audio.voice_enhancement)
 
     # ── 헬퍼 ──────────────────────────────────────────────────────
     @staticmethod
