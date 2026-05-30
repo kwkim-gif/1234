@@ -230,5 +230,16 @@ class TranscriptionService:
     def is_running(self) -> bool:
         return bool(self._worker and self._worker.isRunning())
 
+    def reset(self) -> None:
+        """완료 후 서비스를 초기 상태로 되돌립니다. 워커가 살아있으면 먼저 중지합니다."""
+        if self._worker and self._worker.isRunning():
+            try:
+                self._worker.disconnect()
+            except RuntimeError:
+                pass
+            self._worker.request_stop()
+        self._worker = None
+        self._jobs.clear()
+
     def get_job(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)

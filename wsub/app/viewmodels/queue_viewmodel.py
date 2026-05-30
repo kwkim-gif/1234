@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.config.constants import SUPPORTED_EXTENSIONS
 from app.core.ffmpeg_handler import FFmpegHandler
@@ -65,11 +65,7 @@ class QueueViewModel(QObject):
 
     # ── 전사 시작 ─────────────────────────────────────────────────
     def start_transcription(self, settings: AppSettings) -> None:
-        """미완료 파일 전사를 시작합니다.
-
-        FAILED/CANCELLED 상태의 Job은 새 Job 객체로 교체하여
-        구 워커가 상태를 덮어쓰는 race condition을 방지합니다.
-        """
+        """미완료 파일 전사를 시작합니다."""
         # 실패·취소 job을 새 객체로 교체 (구 워커의 상태 덮어쓰기 차단)
         for i, job in enumerate(self._jobs):
             if job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
@@ -93,14 +89,9 @@ class QueueViewModel(QObject):
         )
 
     def stop_transcription(self) -> None:
-        """워커를 중지하고, 완료되지 않은 파일을 즉시 PENDING(새 객체)으로 교체합니다.
+        """워커를 중지하고, 완료되지 않은 파일을 PENDING(새 객체)으로 교체합니다."""
+        self._service.stop()
 
-        - 워커 Signal 단절 → 구 워커의 상태 덮어쓰기 차단
-        - 완료된 Job은 유지, 나머지는 새 Job 객체로 교체하여 깨끗한 재시작 보장
-        """
-        self._service.stop()  # 내부적으로 disconnect + request_stop
-
-        # 미완료 job을 새 객체로 교체
         reset_statuses = {
             JobStatus.PROCESSING, JobStatus.PENDING,
             JobStatus.FAILED, JobStatus.CANCELLED,
@@ -119,7 +110,7 @@ class QueueViewModel(QObject):
         return list(self._jobs)
 
     def startable_count(self) -> int:
-        """시작 가능한 Job 수."""
+        """시작 가능한 Job 수 (PENDING / FAILED / CANCELLED)."""
         return sum(
             1 for j in self._jobs
             if j.status in (JobStatus.PENDING, JobStatus.FAILED, JobStatus.CANCELLED)
@@ -130,7 +121,6 @@ class QueueViewModel(QObject):
 
     # ── 콜백 ──────────────────────────────────────────────────────
     def _on_progress(self, job_id: str, progress: float) -> None:
-        # 현재 job 목록에 없는 job_id면(구 워커 신호) 무시
         if not any(j.id == job_id for j in self._jobs):
             return
         self.job_progress_changed.emit(job_id, progress)
@@ -142,6 +132,22 @@ class QueueViewModel(QObject):
         self.job_status_changed.emit(job_id)
         self.jobs_changed.emit()
         self._update_overall_progress()
+
+        # 모든 job이 완료되면 3초 후 자동 초기화
+        if all(j.status == JobStatus.COMPLETED for j in self._jobs):
+            self.log_appended.emit("[완료] 모든 작업이 완료되었습니다. 3초 후 목록을 초기화합니다.")
+            QTimer.singleShot(3000, self._reset_after_all_completed)
+
+    def _reset_after_all_completed(self) -> None:
+        """모든 작업 완료 후 큐를 초기화합니다."""
+        # 도중에 새 파일이 추가된 경우(PENDING 있음) 초기화하지 않음
+        if any(j.status != JobStatus.COMPLETED for j in self._jobs):
+            return
+        self._jobs.clear()
+        self._service.reset()
+        self.jobs_changed.emit()
+        self.overall_progress_changed.emit(0.0, "")
+        self.log_appended.emit("[초기화] 목록이 초기화되었습니다. 새 파일을 추가하세요.")
 
     def _on_failed(self, job_id: str, error: str) -> None:
         if not any(j.id == job_id for j in self._jobs):
