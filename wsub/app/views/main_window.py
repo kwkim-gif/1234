@@ -254,7 +254,7 @@ class MainWindow(QMainWindow):
 
     def _on_stop(self) -> None:
         self._vm.stop()
-        self._log_panel.append_log("중지 요청됨")
+        self._log_panel.append_log("중지 요청 — 완료된 파일 제외한 나머지를 대기 상태로 초기화합니다.")
 
     def _open_output_file(self, row: int) -> None:
         jobs = self._vm.queue_vm.jobs()

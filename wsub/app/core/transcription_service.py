@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 import uuid
 from collections import deque
 from pathlib import Path
@@ -22,8 +23,9 @@ class TranscriptionWorker(QThread):
     progress_updated = Signal(str, float)   # job_id, 0.0~1.0
     job_completed = Signal(str, str)        # job_id, output_path
     job_failed = Signal(str, str)           # job_id, error_message
-    log_message = Signal(str)               # 로그 메시지
-    segment_ready = Signal(dict)            # 실시간 세그먼트
+    log_message = Signal(str)
+    segment_ready = Signal(dict)
+    worker_finished = Signal()              # 스레드 종료 알림
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -31,10 +33,8 @@ class TranscriptionWorker(QThread):
         self._settings: AppSettings = AppSettings()
         self._engine: BaseWhisperEngine | None = None
         self._ffmpeg = FFmpegHandler()
-        self._running = False
         self._stop_requested = False
 
-    # ── 외부 인터페이스 ───────────────────────────────────────────
     def enqueue(self, job: Job) -> None:
         self._queue.append(job)
 
@@ -46,18 +46,37 @@ class TranscriptionWorker(QThread):
 
     # ── 실행 루프 ─────────────────────────────────────────────────
     def run(self) -> None:
-        self._running = True
-        self._stop_requested = False
+        """전사 큐를 처리합니다. 모든 예외를 잡아 Signal로 보고합니다."""
+        try:
+            self._run_inner()
+        except BaseException as e:
+            # C++ 레벨 예외 포함 모든 예외를 캐치하여 로그로 전달
+            tb = traceback.format_exc()
+            self.log_message.emit(f"[워커 비정상 종료] {e}\n{tb}")
+            # 남은 큐의 job들을 모두 실패 처리
+            while self._queue:
+                job = self._queue.popleft()
+                job.status = JobStatus.FAILED
+                job.error_message = f"워커 오류: {e}"
+                self.job_failed.emit(job.id, job.error_message)
+        finally:
+            if self._engine:
+                try:
+                    self._engine.unload_model()
+                except Exception:
+                    pass
+            self.worker_finished.emit()
 
+    def _run_inner(self) -> None:
+        self._stop_requested = False
         self._load_engine()
 
         while self._queue and not self._stop_requested:
             job = self._queue.popleft()
+            if job.status == JobStatus.CANCELLED:
+                # 큐에 남아있는 동안 취소된 경우 건너뜀
+                continue
             self._process_job(job)
-
-        if self._engine:
-            self._engine.unload_model()
-        self._running = False
 
     def _load_engine(self) -> None:
         s = self._settings
@@ -67,13 +86,15 @@ class TranscriptionWorker(QThread):
             self._engine.load_model(s.model_name, s)
             self.log_message.emit(f"[모델 로드 완료] {s.model_name}")
         except Exception as e:
+            tb = traceback.format_exc()
             self.log_message.emit(f"[모델 로드 실패] {e}")
+            self.log_message.emit(f"[상세 오류]\n{tb}")
             self._engine = None
 
     def _process_job(self, job: Job) -> None:
         if self._engine is None:
             job.status = JobStatus.FAILED
-            job.error_message = "엔진 초기화 실패"
+            job.error_message = "엔진 초기화 실패 — 에러 로그를 확인하세요."
             self.job_failed.emit(job.id, job.error_message)
             return
 
@@ -82,16 +103,16 @@ class TranscriptionWorker(QThread):
         tmp_audio: Path | None = None
 
         try:
-            # 오디오 추출
-            self.log_message.emit(f"[FFmpeg] 오디오 추출 중...")
+            self.log_message.emit("[FFmpeg] 오디오 추출 중...")
             tmp_audio = self._ffmpeg.extract_audio(job.file_path, self._settings.audio)
 
-            # 전사
             self.log_message.emit(f"[전사 중] {job.file_path.name}")
             segments: list[dict] = []
             total_duration = self._ffmpeg.get_duration(job.file_path) or 1.0
 
-            for seg in self._engine.transcribe(str(tmp_audio), self._settings.language, self._settings):
+            for seg in self._engine.transcribe(
+                str(tmp_audio), self._settings.language, self._settings
+            ):
                 if self._stop_requested:
                     job.status = JobStatus.CANCELLED
                     self.log_message.emit(f"[취소됨] {job.file_path.name}")
@@ -103,9 +124,9 @@ class TranscriptionWorker(QThread):
                 job.progress = progress
                 self.progress_updated.emit(job.id, progress)
 
-            # 설정에 따라 중복 제거 적용
             if getattr(self._settings, "dedup_segments", True):
                 segments = remove_duplicate_segments(segments)
+
             output_path = build_output_path(
                 job.file_path, self._settings.output_dir,
                 self._settings.language, self._settings.output_format,
@@ -123,14 +144,18 @@ class TranscriptionWorker(QThread):
             self.log_message.emit(f"[완료] {output_path.name}")
 
         except Exception as e:
+            tb = traceback.format_exc()
             job.status = JobStatus.FAILED
             job.error_message = str(e)
             self.job_failed.emit(job.id, str(e))
-            self.log_message.emit(f"[실패] {job.file_path.name}: {e}")
+            self.log_message.emit(f"[실패] {job.file_path.name}: {e}\n{tb}")
 
         finally:
             if tmp_audio and tmp_audio.exists():
-                tmp_audio.unlink(missing_ok=True)
+                try:
+                    tmp_audio.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 class TranscriptionService:
@@ -156,7 +181,13 @@ class TranscriptionService:
         on_log: Callable[[str], None],
         on_segment: Callable[[dict], None],
     ) -> TranscriptionWorker:
-        """전사 작업을 시작하고 워커를 반환합니다."""
+        """이전 워커를 정리한 뒤 새 워커를 시작합니다."""
+        # 이전 워커가 살아있으면 신호를 끊고 종료 대기 (최대 2초)
+        if self._worker and self._worker.isRunning():
+            self._worker.request_stop()
+            self._worker.disconnect()
+            self._worker.wait(2000)
+
         worker = TranscriptionWorker()
         worker.set_settings(settings)
         for job in jobs:
@@ -174,8 +205,11 @@ class TranscriptionService:
 
     def stop(self) -> None:
         """실행 중인 워커에 중지를 요청합니다."""
-        if self._worker:
+        if self._worker and self._worker.isRunning():
             self._worker.request_stop()
+
+    def is_running(self) -> bool:
+        return bool(self._worker and self._worker.isRunning())
 
     def get_job(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)

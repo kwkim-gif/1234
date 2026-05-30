@@ -20,7 +20,7 @@ class QueueViewModel(QObject):
     log_appended = Signal(str)
     error_appended = Signal(str)
     overall_progress_changed = Signal(float, str)
-    segment_ready = Signal(dict)  # 실시간 전사 세그먼트
+    segment_ready = Signal(dict)
 
     def __init__(self, service: TranscriptionService, parent=None) -> None:
         super().__init__(parent)
@@ -45,7 +45,6 @@ class QueueViewModel(QObject):
             self.jobs_changed.emit()
 
     def remove_job(self, index: int) -> None:
-        """큐에서 Job을 제거합니다."""
         if 0 <= index < len(self._jobs):
             self._jobs.pop(index)
             self.jobs_changed.emit()
@@ -64,13 +63,10 @@ class QueueViewModel(QObject):
         self._jobs = [j for j in self._jobs if j.status != JobStatus.COMPLETED]
         self.jobs_changed.emit()
 
-    # ── 전사 시작/중지 ────────────────────────────────────────────
+    # ── 전사 시작 ─────────────────────────────────────────────────
     def start_transcription(self, settings: AppSettings) -> None:
-        """대기 중 또는 재시도 대상 Job들의 전사를 시작합니다.
-
-        실패/취소된 Job은 PENDING으로 초기화하여 재시도합니다.
-        """
-        # 실패·취소된 Job을 PENDING으로 리셋하여 재시도 허용
+        """미완료 Job들의 전사를 시작합니다."""
+        # FAILED/CANCELLED를 PENDING으로 초기화
         for job in self._jobs:
             if job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 job.status = JobStatus.PENDING
@@ -82,7 +78,6 @@ class QueueViewModel(QObject):
             return
 
         self.jobs_changed.emit()
-
         self._service.start(
             jobs=pending,
             settings=settings,
@@ -94,18 +89,37 @@ class QueueViewModel(QObject):
         )
 
     def stop_transcription(self) -> None:
+        """워커를 중지하고 미완료 파일을 즉시 PENDING으로 리셋합니다.
+
+        완료된 파일은 유지하고, 나머지(처리중/대기중/실패/취소)는
+        0%로 초기화하여 다음 시작 시 바로 재처리할 수 있게 합니다.
+        """
         self._service.stop()
 
-    def startable_count(self) -> int:
-        """시작 가능한 Job 수 (대기중 + 실패 + 취소)."""
-        return sum(
-            1 for j in self._jobs
-            if j.status in (JobStatus.PENDING, JobStatus.FAILED, JobStatus.CANCELLED)
-        )
+        # UI 즉시 반영 — 워커 종료를 기다리지 않고 상태 리셋
+        reset_statuses = {
+            JobStatus.PROCESSING, JobStatus.PENDING,
+            JobStatus.FAILED, JobStatus.CANCELLED,
+        }
+        for job in self._jobs:
+            if job.status in reset_statuses:
+                job.status = JobStatus.PENDING
+                job.progress = 0.0
+                job.error_message = ""
+
+        self.jobs_changed.emit()
+        self._update_overall_progress()
 
     # ── 조회 ──────────────────────────────────────────────────────
     def jobs(self) -> list[Job]:
         return list(self._jobs)
+
+    def startable_count(self) -> int:
+        """시작 가능한 Job 수 (PENDING + FAILED + CANCELLED)."""
+        return sum(
+            1 for j in self._jobs
+            if j.status in (JobStatus.PENDING, JobStatus.FAILED, JobStatus.CANCELLED)
+        )
 
     def pending_count(self) -> int:
         return sum(1 for j in self._jobs if j.status == JobStatus.PENDING)
