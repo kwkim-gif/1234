@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from typing import Generator
+
+from app.engines.base_engine import BaseWhisperEngine
+from app.models.settings import AppSettings
+
+
+class FasterWhisperEngine(BaseWhisperEngine):
+    """faster-whisper 기반 전사 엔진."""
+
+    def __init__(self) -> None:
+        self._model = None
+        self._model_name: str = ""
+
+    def load_model(self, model_name: str, settings: AppSettings) -> None:
+        """faster-whisper 모델을 로드합니다."""
+        from faster_whisper import WhisperModel
+
+        device = self._resolve_device(settings.device)
+        compute_type = "float16" if device == "cuda" else "int8"
+
+        # HuggingFace ID에서 모델명 추출 (openai/whisper-large-v3 -> large-v3)
+        short_name = model_name.split("/")[-1]
+        if short_name.startswith("whisper-"):
+            short_name = short_name[len("whisper-"):]
+
+        self._model = WhisperModel(short_name, device=device, compute_type=compute_type)
+        self._model_name = model_name
+
+    def transcribe(
+        self,
+        audio_path: str,
+        language: str | None,
+        settings: AppSettings,
+    ) -> Generator[dict, None, None]:
+        """오디오를 전사하여 세그먼트를 실시간으로 yield합니다."""
+        if self._model is None:
+            raise RuntimeError("모델이 로드되지 않았습니다.")
+
+        lang = None if language == "auto" else language
+        ws = settings.whisper
+
+        segments, _ = self._model.transcribe(
+            audio_path,
+            language=lang,
+            temperature=ws.temperature,
+            beam_size=ws.beam_size,
+            best_of=ws.best_of,
+            no_speech_threshold=ws.no_speech_threshold,
+            compression_ratio_threshold=ws.compression_ratio_threshold,
+            condition_on_previous_text=ws.condition_on_previous_text,
+            word_timestamps=ws.word_timestamps,
+            vad_filter=ws.vad_filter,
+        )
+
+        for seg in segments:
+            yield {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+
+    def unload_model(self) -> None:
+        """모델을 메모리에서 해제합니다."""
+        self._model = None
+
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    @staticmethod
+    def _resolve_device(device: str) -> str:
+        if device == "auto":
+            try:
+                import torch
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                return "cpu"
+        return device
