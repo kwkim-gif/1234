@@ -65,13 +65,17 @@ class QueueViewModel(QObject):
 
     # ── 전사 시작 ─────────────────────────────────────────────────
     def start_transcription(self, settings: AppSettings) -> None:
-        """미완료 Job들의 전사를 시작합니다."""
-        # FAILED/CANCELLED를 PENDING으로 초기화
-        for job in self._jobs:
+        """미완료 파일 전사를 시작합니다.
+
+        FAILED/CANCELLED 상태의 Job은 새 Job 객체로 교체하여
+        구 워커가 상태를 덮어쓰는 race condition을 방지합니다.
+        """
+        # 실패·취소 job을 새 객체로 교체 (구 워커의 상태 덮어쓰기 차단)
+        for i, job in enumerate(self._jobs):
             if job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                job.status = JobStatus.PENDING
-                job.progress = 0.0
-                job.error_message = ""
+                new_job = self._service.create_job(job.file_path)
+                new_job.duration = job.duration
+                self._jobs[i] = new_job
 
         pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
         if not pending:
@@ -89,23 +93,23 @@ class QueueViewModel(QObject):
         )
 
     def stop_transcription(self) -> None:
-        """워커를 중지하고 미완료 파일을 즉시 PENDING으로 리셋합니다.
+        """워커를 중지하고, 완료되지 않은 파일을 즉시 PENDING(새 객체)으로 교체합니다.
 
-        완료된 파일은 유지하고, 나머지(처리중/대기중/실패/취소)는
-        0%로 초기화하여 다음 시작 시 바로 재처리할 수 있게 합니다.
+        - 워커 Signal 단절 → 구 워커의 상태 덮어쓰기 차단
+        - 완료된 Job은 유지, 나머지는 새 Job 객체로 교체하여 깨끗한 재시작 보장
         """
-        self._service.stop()
+        self._service.stop()  # 내부적으로 disconnect + request_stop
 
-        # UI 즉시 반영 — 워커 종료를 기다리지 않고 상태 리셋
+        # 미완료 job을 새 객체로 교체
         reset_statuses = {
             JobStatus.PROCESSING, JobStatus.PENDING,
             JobStatus.FAILED, JobStatus.CANCELLED,
         }
-        for job in self._jobs:
+        for i, job in enumerate(self._jobs):
             if job.status in reset_statuses:
-                job.status = JobStatus.PENDING
-                job.progress = 0.0
-                job.error_message = ""
+                new_job = self._service.create_job(job.file_path)
+                new_job.duration = job.duration
+                self._jobs[i] = new_job
 
         self.jobs_changed.emit()
         self._update_overall_progress()
@@ -115,7 +119,7 @@ class QueueViewModel(QObject):
         return list(self._jobs)
 
     def startable_count(self) -> int:
-        """시작 가능한 Job 수 (PENDING + FAILED + CANCELLED)."""
+        """시작 가능한 Job 수."""
         return sum(
             1 for j in self._jobs
             if j.status in (JobStatus.PENDING, JobStatus.FAILED, JobStatus.CANCELLED)
@@ -126,15 +130,22 @@ class QueueViewModel(QObject):
 
     # ── 콜백 ──────────────────────────────────────────────────────
     def _on_progress(self, job_id: str, progress: float) -> None:
+        # 현재 job 목록에 없는 job_id면(구 워커 신호) 무시
+        if not any(j.id == job_id for j in self._jobs):
+            return
         self.job_progress_changed.emit(job_id, progress)
         self._update_overall_progress()
 
     def _on_completed(self, job_id: str, output_path: str) -> None:
+        if not any(j.id == job_id for j in self._jobs):
+            return
         self.job_status_changed.emit(job_id)
         self.jobs_changed.emit()
         self._update_overall_progress()
 
     def _on_failed(self, job_id: str, error: str) -> None:
+        if not any(j.id == job_id for j in self._jobs):
+            return
         self.job_status_changed.emit(job_id)
         self.error_appended.emit(f"[실패] {error}")
         self.jobs_changed.emit()

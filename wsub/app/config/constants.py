@@ -24,8 +24,9 @@ SUPPORTED_MODELS: list[dict] = [
     {"id": "openai/whisper-large-v2",         "name": "Whisper Large v2",     "size_gb": 6.17},
     {"id": "openai/whisper-large-v3",         "name": "Whisper Large v3",     "size_gb": 6.17},
     {"id": "openai/whisper-large-v3-turbo",   "name": "Whisper Large Turbo",  "size_gb": 3.09},
-    {"id": "kotoba-tech/kotoba-whisper-v2.0", "name": "Kotoba Whisper v2",    "size_gb": 6.17},
-    {"id": "litagin/anime-whisper",           "name": "Anime Whisper",        "size_gb": 6.17},
+    # kotoba-whisper-v2.0-faster: CTranslate2 변환 버전 → faster-whisper 직접 사용 가능
+    {"id": "kotoba-tech/kotoba-whisper-v2.0-faster", "name": "Kotoba Whisper v2 (Fast)", "size_gb": 6.17},
+    {"id": "litagin/anime-whisper",                  "name": "Anime Whisper",             "size_gb": 6.17},
 ]
 
 SUPPORTED_LANGUAGES: list[dict[str, str]] = [

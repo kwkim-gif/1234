@@ -18,14 +18,14 @@ from app.models.settings import AppSettings
 
 
 class TranscriptionWorker(QThread):
-    """백그라운드에서 전사 큐를 처리하는 워커 스레드."""
+    """백그라운드 전사 워커. 모든 예외를 캐치하여 Signal로 보고합니다."""
 
-    progress_updated = Signal(str, float)   # job_id, 0.0~1.0
-    job_completed = Signal(str, str)        # job_id, output_path
-    job_failed = Signal(str, str)           # job_id, error_message
+    progress_updated = Signal(str, float)
+    job_completed = Signal(str, str)
+    job_failed = Signal(str, str)
     log_message = Signal(str)
     segment_ready = Signal(dict)
-    worker_finished = Signal()              # 스레드 종료 알림
+    worker_finished = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -34,9 +34,12 @@ class TranscriptionWorker(QThread):
         self._engine: BaseWhisperEngine | None = None
         self._ffmpeg = FFmpegHandler()
         self._stop_requested = False
+        # 이 워커가 처리하는 job들의 ID 집합 (다른 워커의 시그널과 구분)
+        self._owned_job_ids: set[str] = set()
 
     def enqueue(self, job: Job) -> None:
         self._queue.append(job)
+        self._owned_job_ids.add(job.id)
 
     def set_settings(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -44,21 +47,18 @@ class TranscriptionWorker(QThread):
     def request_stop(self) -> None:
         self._stop_requested = True
 
-    # ── 실행 루프 ─────────────────────────────────────────────────
     def run(self) -> None:
-        """전사 큐를 처리합니다. 모든 예외를 잡아 Signal로 보고합니다."""
         try:
             self._run_inner()
         except BaseException as e:
-            # C++ 레벨 예외 포함 모든 예외를 캐치하여 로그로 전달
             tb = traceback.format_exc()
             self.log_message.emit(f"[워커 비정상 종료] {e}\n{tb}")
-            # 남은 큐의 job들을 모두 실패 처리
             while self._queue:
                 job = self._queue.popleft()
-                job.status = JobStatus.FAILED
-                job.error_message = f"워커 오류: {e}"
-                self.job_failed.emit(job.id, job.error_message)
+                if job.id in self._owned_job_ids:
+                    job.status = JobStatus.FAILED
+                    job.error_message = f"워커 오류: {e}"
+                    self.job_failed.emit(job.id, job.error_message)
         finally:
             if self._engine:
                 try:
@@ -73,10 +73,16 @@ class TranscriptionWorker(QThread):
 
         while self._queue and not self._stop_requested:
             job = self._queue.popleft()
+            # 중지 후 재시작으로 job이 새 워커로 넘어간 경우 스킵
+            if job.id not in self._owned_job_ids:
+                continue
             if job.status == JobStatus.CANCELLED:
-                # 큐에 남아있는 동안 취소된 경우 건너뜀
                 continue
             self._process_job(job)
+
+        if self._engine:
+            self._engine.unload_model()
+            self._engine = None
 
     def _load_engine(self) -> None:
         s = self._settings
@@ -87,8 +93,7 @@ class TranscriptionWorker(QThread):
             self.log_message.emit(f"[모델 로드 완료] {s.model_name}")
         except Exception as e:
             tb = traceback.format_exc()
-            self.log_message.emit(f"[모델 로드 실패] {e}")
-            self.log_message.emit(f"[상세 오류]\n{tb}")
+            self.log_message.emit(f"[모델 로드 실패] {e}\n{tb}")
             self._engine = None
 
     def _process_job(self, job: Job) -> None:
@@ -113,7 +118,7 @@ class TranscriptionWorker(QThread):
             for seg in self._engine.transcribe(
                 str(tmp_audio), self._settings.language, self._settings
             ):
-                if self._stop_requested:
+                if self._stop_requested or job.id not in self._owned_job_ids:
                     job.status = JobStatus.CANCELLED
                     self.log_message.emit(f"[취소됨] {job.file_path.name}")
                     return
@@ -166,7 +171,6 @@ class TranscriptionService:
         self._jobs: dict[str, Job] = {}
 
     def create_job(self, file_path: Path) -> Job:
-        """새 Job을 생성합니다."""
         job = Job(id=str(uuid.uuid4()), file_path=file_path)
         self._jobs[job.id] = job
         return job
@@ -181,12 +185,14 @@ class TranscriptionService:
         on_log: Callable[[str], None],
         on_segment: Callable[[dict], None],
     ) -> TranscriptionWorker:
-        """이전 워커를 정리한 뒤 새 워커를 시작합니다."""
-        # 이전 워커가 살아있으면 신호를 끊고 종료 대기 (최대 2초)
-        if self._worker and self._worker.isRunning():
+        """이전 워커 신호를 단절하고 새 워커를 시작합니다."""
+        if self._worker:
+            # 이전 워커의 Signal을 모두 끊어 job 상태 덮어쓰기 방지
+            try:
+                self._worker.disconnect()
+            except RuntimeError:
+                pass
             self._worker.request_stop()
-            self._worker.disconnect()
-            self._worker.wait(2000)
 
         worker = TranscriptionWorker()
         worker.set_settings(settings)
@@ -204,8 +210,11 @@ class TranscriptionService:
         return worker
 
     def stop(self) -> None:
-        """실행 중인 워커에 중지를 요청합니다."""
         if self._worker and self._worker.isRunning():
+            try:
+                self._worker.disconnect()
+            except RuntimeError:
+                pass
             self._worker.request_stop()
 
     def is_running(self) -> bool:
