@@ -1,8 +1,9 @@
 #!/usr/bin/env python
-"""W-Sub CUDA 환경 점검 스크립트.
+"""W-Sub CUDA environment check.
 
-PyTorch / CTranslate2 의 CUDA 인식 여부와 cublas64_12.dll 존재를 확인합니다.
-reinstall_cuda.ps1 마지막 단계에서 호출됩니다.
+Verifies PyTorch / CTranslate2 CUDA detection and the presence of
+cublas64_12.dll. Called at the end of reinstall_cuda.ps1 / .bat.
+(ASCII-only output to avoid console encoding issues.)
 """
 from __future__ import annotations
 
@@ -14,36 +15,36 @@ def check_torch() -> None:
     print("[PyTorch]")
     try:
         import torch
-        print(f"  버전: {torch.__version__}")
+        print(f"  version: {torch.__version__}")
         avail = torch.cuda.is_available()
-        print(f"  CUDA 사용 가능: {avail}")
-        print(f"  CUDA 버전: {torch.version.cuda if avail else 'N/A'}")
+        print(f"  CUDA available: {avail}")
+        print(f"  CUDA version: {torch.version.cuda if avail else 'N/A'}")
         if avail:
             print(f"  GPU: {torch.cuda.get_device_name(0)}")
     except Exception as e:
-        print(f"  [오류] {e}")
+        print(f"  [ERROR] {e}")
 
 
 def check_ctranslate2() -> None:
     print("\n[CTranslate2]")
     try:
         import ctranslate2
-        print(f"  버전: {ctranslate2.__version__}")
+        print(f"  version: {ctranslate2.__version__}")
         devs = ctranslate2.get_cuda_device_count()
-        print(f"  CUDA 장치 수: {devs}")
+        print(f"  CUDA device count: {devs}")
         if devs == 0:
-            print("  [주의] CUDA 장치를 인식하지 못했습니다 (CPU로 동작).")
+            print("  [WARN] No CUDA device detected (will run on CPU).")
     except Exception as e:
-        print(f"  [오류] {e}")
+        print(f"  [ERROR] {e}")
 
 
 def find_cublas() -> None:
-    print("\n[cublas64_12.dll 탐색]")
+    print("\n[cublas64_12.dll search]")
     roots: list[str] = []
     cuda_path = os.environ.get("CUDA_PATH")
     if cuda_path:
         roots.append(cuda_path)
-    roots.append(sys.prefix)  # 가상환경/파이썬 설치 경로 (nvidia 휠 포함)
+    roots.append(sys.prefix)  # venv / python install (includes nvidia wheels)
 
     for base in roots:
         if not base or not os.path.isdir(base):
@@ -51,10 +52,10 @@ def find_cublas() -> None:
         for root, _dirs, files in os.walk(base):
             for f in files:
                 if f.lower() == "cublas64_12.dll":
-                    print(f"  발견: {os.path.join(root, f)}")
+                    print(f"  found: {os.path.join(root, f)}")
                     return
-    print("  [주의] cublas64_12.dll 을 찾지 못했습니다.")
-    print("         nvidia-cublas-cu12 휠 또는 CUDA Toolkit 12.x 설치가 필요합니다.")
+    print("  [WARN] cublas64_12.dll not found.")
+    print("         Needs nvidia-cublas-cu12 wheel or CUDA Toolkit 12.x.")
 
 
 if __name__ == "__main__":
