@@ -99,12 +99,142 @@ jobs:
           Compress-Archive -Path "dist\W-Sub" -DestinationPath "dist\W-Sub_windows_x64.zip"
           Write-Host "✅ W-Sub_windows_x64.zip 생성됨"
 
-      - name: 아티팩트 업로드 (onedir)
+      - name: 아티팩트 업로드 (onedir 전체본)
         if: ${{ github.event.inputs.build_mode != 'onefile' }}
         uses: actions/upload-artifact@v4
         with:
           name: W-Sub_windows_x64
           path: wsub/dist/W-Sub_windows_x64.zip
+          retention-days: 30
+
+      # ── 패치 ZIP 생성: 직전 성공 빌드와 비교해 변경/추가 파일만 추출 ──
+      - name: 직전 성공 빌드 다운로드 (패치 비교용)
+        if: ${{ github.event.inputs.build_mode != 'onefile' }}
+        id: download-prev
+        continue-on-error: true   # 첫 빌드 등 직전 아티팩트가 없을 수 있음
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: W-Sub_windows_x64
+          workflow: build-windows-exe.yml
+          branch: ${{ github.ref_name }}
+          search_artifacts: true
+          if_no_artifact_found: warn
+          path: wsub/prev_build
+
+      - name: 패치 ZIP 생성 (변경 파일만)
+        if: ${{ github.event.inputs.build_mode != 'onefile' && steps.download-prev.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $prevZip = Get-ChildItem -Path "prev_build" -Filter "*.zip" -Recurse | Select-Object -First 1
+          if (-not $prevZip) {
+            Write-Host "::warning::직전 빌드 ZIP을 찾을 수 없습니다 — 패치 생성을 건너뜁니다."
+            exit 0
+          }
+
+          Write-Host "직전 빌드: $($prevZip.FullName)"
+          Expand-Archive -Path $prevZip.FullName -DestinationPath "prev_extracted" -Force
+
+          # 압축 해제 결과에서 W-Sub 루트 폴더 찾기
+          $prevRoot = Join-Path "prev_extracted" "W-Sub"
+          if (-not (Test-Path $prevRoot)) {
+            $prevRoot = (Get-ChildItem -Path "prev_extracted" -Directory | Select-Object -First 1).FullName
+          }
+          $newRoot = "dist\W-Sub"
+
+          Write-Host "이전 루트: $prevRoot"
+          Write-Host "신규 루트: $newRoot"
+
+          # 신규 빌드의 모든 파일을 이전 빌드와 해시 비교
+          $patchDir = "dist\patch\W-Sub"
+          New-Item -ItemType Directory -Force -Path $patchDir | Out-Null
+
+          $changed = New-Object System.Collections.Generic.List[string]
+          $added   = New-Object System.Collections.Generic.List[string]
+          $deleted = New-Object System.Collections.Generic.List[string]
+
+          $newFiles = Get-ChildItem -Path $newRoot -Recurse -File
+          foreach ($f in $newFiles) {
+            $rel = $f.FullName.Substring((Resolve-Path $newRoot).Path.Length + 1)
+            $prevFile = Join-Path $prevRoot $rel
+
+            $copy = $false
+            if (-not (Test-Path $prevFile)) {
+              $added.Add($rel); $copy = $true
+            } else {
+              $h1 = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+              $h2 = (Get-FileHash $prevFile -Algorithm SHA256).Hash
+              if ($h1 -ne $h2) { $changed.Add($rel); $copy = $true }
+            }
+
+            if ($copy) {
+              $dest = Join-Path $patchDir $rel
+              New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+              Copy-Item $f.FullName $dest -Force
+            }
+          }
+
+          # 이전 빌드에는 있었으나 신규에는 없는 파일 (삭제 대상)
+          $prevFiles = Get-ChildItem -Path $prevRoot -Recurse -File
+          foreach ($f in $prevFiles) {
+            $rel = $f.FullName.Substring((Resolve-Path $prevRoot).Path.Length + 1)
+            if (-not (Test-Path (Join-Path $newRoot $rel))) {
+              $deleted.Add($rel)
+            }
+          }
+
+          # 매니페스트 작성 (적용 스크립트가 참조)
+          $manifest = [ordered]@{
+            version  = "${{ github.sha }}"
+            built_at = (Get-Date).ToString("o")
+            added    = $added
+            changed  = $changed
+            deleted  = $deleted
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path "dist\patch" "patch_manifest.json") -Encoding UTF8
+
+          Write-Host "추가: $($added.Count) / 변경: $($changed.Count) / 삭제: $($deleted.Count)"
+
+          if ($added.Count -eq 0 -and $changed.Count -eq 0 -and $deleted.Count -eq 0) {
+            Write-Host "::warning::변경된 파일이 없습니다 — 패치 ZIP을 생성하지 않습니다."
+            "NO_PATCH=true" | Out-File -FilePath $env:GITHUB_ENV -Append
+            exit 0
+          }
+
+          # 패치 적용 스크립트(apply_patch.bat) 동봉
+          $applyLines = @(
+            '@echo off',
+            'REM W-Sub patch apply script',
+            'setlocal',
+            'set SCRIPT_DIR=%~dp0',
+            'echo ============================================',
+            'echo  W-Sub patch apply',
+            'echo ============================================',
+            'echo.',
+            'set /p TARGET="Install folder path (where W-Sub.exe is): "',
+            'if not exist "%TARGET%\W-Sub.exe" (',
+            '  echo [ERROR] W-Sub.exe not found in that folder.',
+            '  pause',
+            '  exit /b 1',
+            ')',
+            'echo Copying changed files...',
+            'xcopy /E /Y /I "%SCRIPT_DIR%W-Sub\*" "%TARGET%\"',
+            'echo.',
+            'echo [DONE] Patch applied.',
+            'pause'
+          )
+          $applyLines | Set-Content -Path (Join-Path "dist\patch" "apply_patch.bat") -Encoding ASCII
+
+          Compress-Archive -Path "dist\patch\*" -DestinationPath "dist\W-Sub_patch.zip" -Force
+          Write-Host "✅ W-Sub_patch.zip 생성됨"
+
+      - name: 패치 ZIP 업로드
+        if: ${{ github.event.inputs.build_mode != 'onefile' && steps.download-prev.outcome == 'success' && env.NO_PATCH != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: W-Sub_patch
+          path: wsub/dist/W-Sub_patch.zip
           retention-days: 30
 
       - name: 아티팩트 업로드 (onefile)
