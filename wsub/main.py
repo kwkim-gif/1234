@@ -66,6 +66,18 @@ def _print_check(label: str, ok: bool, detail: str) -> None:
 def main() -> None:
     _setup_frozen_paths()
     _check_python_version()
+
+    # ctranslate2/faster_whisper가 import되기 전에 CUDA DLL 경로 등록 (GPU 가속용)
+    try:
+        from app.core.cuda_setup import register_cuda_dll_dirs
+        added = register_cuda_dll_dirs()
+        if added:
+            print(f"[CUDA] DLL 경로 등록: {len(added)}개")
+            for d in added:
+                print(f"        {d}")
+    except Exception as e:
+        print(f"[CUDA] DLL 경로 등록 실패: {e}")
+
     _run_startup_checks()
 
     from PySide6.QtWidgets import QApplication

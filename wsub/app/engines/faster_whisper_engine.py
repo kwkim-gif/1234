@@ -35,6 +35,10 @@ class FasterWhisperEngine(BaseWhisperEngine):
         self._model_name: str = ""
         self._device: str = "cpu"
         self._compute_type: str = _CPU_COMPUTE
+        self._log = lambda msg: None  # 워커가 주입하는 로그 콜백
+
+    def set_logger(self, log_fn) -> None:
+        self._log = log_fn
 
     def load_model(self, model_name: str, settings: AppSettings) -> None:
         from app.core.cuda_setup import register_cuda_dll_dirs
@@ -43,9 +47,12 @@ class FasterWhisperEngine(BaseWhisperEngine):
 
         requested_device = _resolve_device(settings.device)
         model_id = _BUILTIN_MODELS.get(model_name, model_name)
+        self._log(f"[장치] 요청={settings.device} → 해석={requested_device}")
 
         if requested_device == "cuda":
-            model, device, compute_type = _load_cuda_with_fallback(WhisperModel, model_id)
+            model, device, compute_type = _load_cuda_with_fallback(
+                WhisperModel, model_id, self._log
+            )
         else:
             model = WhisperModel(model_id, device="cpu", compute_type=_CPU_COMPUTE)
             device, compute_type = "cpu", _CPU_COMPUTE
@@ -54,6 +61,11 @@ class FasterWhisperEngine(BaseWhisperEngine):
         self._device = device
         self._compute_type = compute_type
         self._model_name = model_name
+
+        if device == "cuda":
+            self._log(f"[GPU] ✅ CUDA 사용 중 (compute_type={compute_type})")
+        else:
+            self._log("[GPU] ⚠️ CPU로 동작 중 — GPU 가속이 적용되지 않았습니다.")
 
     def transcribe(
         self,
@@ -96,6 +108,7 @@ class FasterWhisperEngine(BaseWhisperEngine):
         except RuntimeError as e:
             if _is_cublas_error(e) and self._device == "cuda":
                 # cublas 오류 → CPU로 모델 재로드 후 재시도
+                self._log(f"[GPU] 전사 중 cublas 오류 → CPU로 전환: {e}")
                 self._reload_on_cpu()
                 yield from self._do_transcribe(audio_path, transcribe_kwargs)
             else:
@@ -181,7 +194,7 @@ def _is_cublas_error(e: Exception) -> bool:
     return any(k in msg for k in ("cublas", "cublaslt", "cudnn", "dll", "cannot be loaded"))
 
 
-def _load_cuda_with_fallback(WhisperModel, model_id: str):
+def _load_cuda_with_fallback(WhisperModel, model_id: str, log=lambda m: None):
     """
     CUDA compute type을 순서대로 시도합니다.
     모두 실패하면 CPU로 폴백합니다.
@@ -193,9 +206,12 @@ def _load_cuda_with_fallback(WhisperModel, model_id: str):
             model = WhisperModel(model_id, device="cuda", compute_type=compute_type)
             return model, "cuda", compute_type
         except Exception as e:
+            log(f"[GPU] CUDA 로드 실패 (compute_type={compute_type}): {e}")
             if not _is_cublas_error(e):
                 raise
 
     # 모든 CUDA 시도 실패 → CPU 폴백
+    log("[GPU] 모든 CUDA compute_type 실패 → CPU로 폴백합니다. "
+        "reinstall_cuda_run.bat 으로 CUDA 12 라이브러리를 재설치하세요.")
     model = WhisperModel(model_id, device="cpu", compute_type=_CPU_COMPUTE)
     return model, "cpu", _CPU_COMPUTE

@@ -93,6 +93,8 @@ class TranscriptionWorker(QThread):
         s = self._settings
         self.log_message.emit(f"[엔진 로드] {s.engine} / {s.model_name}")
         self._engine = create_engine(s.engine, s.model_name)
+        if hasattr(self._engine, "set_logger"):
+            self._engine.set_logger(self.log_message.emit)
         try:
             self._engine.load_model(s.model_name, s)
             self.log_message.emit(f"[모델 로드 완료] {s.model_name}")
@@ -195,14 +197,8 @@ class TranscriptionService:
         on_log: Callable[[str], None],
         on_segment: Callable[[dict], None],
     ) -> TranscriptionWorker:
-        """이전 워커 신호를 단절하고 새 워커를 시작합니다."""
-        if self._worker:
-            # 이전 워커의 Signal을 모두 끊어 job 상태 덮어쓰기 방지
-            try:
-                self._worker.disconnect()
-            except RuntimeError:
-                pass
-            self._worker.request_stop()
+        """이전 워커를 완전히 종료시킨 뒤 새 워커를 시작합니다."""
+        self._teardown_worker()
 
         worker = TranscriptionWorker()
         worker.set_settings(settings)
@@ -220,26 +216,36 @@ class TranscriptionService:
         return worker
 
     def stop(self) -> None:
-        if self._worker and self._worker.isRunning():
-            try:
-                self._worker.disconnect()
-            except RuntimeError:
-                pass
-            self._worker.request_stop()
+        self._teardown_worker()
 
     def is_running(self) -> bool:
         return bool(self._worker and self._worker.isRunning())
 
     def reset(self) -> None:
-        """완료 후 서비스를 초기 상태로 되돌립니다. 워커가 살아있으면 먼저 중지합니다."""
-        if self._worker and self._worker.isRunning():
-            try:
-                self._worker.disconnect()
-            except RuntimeError:
-                pass
-            self._worker.request_stop()
+        """완료 후 서비스를 초기 상태로 되돌립니다. 워커가 살아있으면 먼저 종료합니다."""
+        self._teardown_worker()
         self._worker = None
         self._jobs.clear()
+
+    def _teardown_worker(self) -> None:
+        """이전 워커의 신호를 끊고 스레드가 완전히 종료될 때까지 대기합니다.
+
+        QThread를 wait()로 확실히 종료시키지 않으면, 새 워커 시작 시
+        이전 스레드의 CUDA/모델 상태가 남아 두 번째 실행이 멈추는 문제가 발생합니다.
+        """
+        if not self._worker:
+            return
+        try:
+            self._worker.disconnect()
+        except RuntimeError:
+            pass
+        self._worker.request_stop()
+        if self._worker.isRunning():
+            # 최대 10초 대기 (모델 언로드/추론 종료 시간 확보)
+            if not self._worker.wait(10000):
+                self._worker.terminate()
+                self._worker.wait(2000)
+        self._worker = None
 
     def get_job(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
