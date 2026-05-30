@@ -42,7 +42,7 @@ class FasterWhisperEngine(BaseWhisperEngine):
 
     def load_model(self, model_name: str, settings: AppSettings) -> None:
         from app.core.cuda_setup import register_cuda_dll_dirs
-        register_cuda_dll_dirs()  # cublas/cudnn DLL 경로 등록 (faster_whisper import 전)
+        register_cuda_dll_dirs(log=self._log)  # cublas/cudnn DLL 등록+preload (faster_whisper import 전)
         from faster_whisper import WhisperModel
 
         requested_device = _resolve_device(settings.device)
