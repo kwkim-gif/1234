@@ -87,29 +87,7 @@ echo ====================================================================
 echo  설치 결과 확인
 echo ====================================================================
 echo.
-echo [PyTorch]
-python -c "import torch; print('  버전:', torch.__version__); print('  CUDA 사용 가능:', torch.cuda.is_available()); print('  CUDA 버전:', torch.version.cuda if torch.cuda.is_available() else 'N/A')" 2>&1
-
-echo.
-echo [CTranslate2]
-python -c "import ctranslate2; print('  버전:', ctranslate2.__version__); devs=ctranslate2.get_cuda_device_count(); print('  CUDA 장치 수:', devs)" 2>&1
-
-echo.
-echo [cublas64_12.dll 탐색]
-python -c "
-import os, sys
-found = []
-for base in [os.environ.get('CUDA_PATH',''), sys.prefix]:
-    for root, dirs, files in os.walk(base):
-        for f in files:
-            if f.lower() == 'cublas64_12.dll':
-                found.append(os.path.join(root,f))
-if found:
-    print('  발견:', found[0])
-else:
-    print('  [주의] cublas64_12.dll 을 찾지 못했습니다.')
-    print('         CUDA Toolkit 12.x 또는 nvidia-cublas-cu12 휠이 필요합니다.')
-" 2>&1
+python "%~dp0check_cuda.py"
 
 echo.
 echo ====================================================================
