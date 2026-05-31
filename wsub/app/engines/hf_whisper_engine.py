@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from typing import Generator
+from typing import Callable, Generator
 
 from app.engines.base_engine import BaseWhisperEngine
 from app.models.settings import AppSettings
 
 
 class HFWhisperEngine(BaseWhisperEngine):
-    """HuggingFace Transformers 기반 Whisper 엔진 (kotoba-whisper, anime-whisper 등)."""
+    """HuggingFace Transformers 기반 Whisper 엔진 (anime-whisper 등 safetensors 포맷)."""
 
     def __init__(self) -> None:
         self._pipeline = None
         self._model_name: str = ""
+        self._log: Callable[[str], None] = lambda msg: None
+
+    def set_logger(self, log_fn: Callable[[str], None]) -> None:
+        self._log = log_fn
 
     def load_model(self, model_name: str, settings: AppSettings) -> None:
         """HuggingFace 파이프라인으로 모델을 로드합니다. CUDA 실패 시 CPU로 폴백합니다."""
@@ -19,11 +23,20 @@ class HFWhisperEngine(BaseWhisperEngine):
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
         device = _resolve_device(settings.device)
+        self._log(f"[HF 엔진 로드] {model_name} / device={device}")
 
-        self._pipeline = _load_pipeline(
-            model_name, device, AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline, torch
-        )
+        try:
+            self._pipeline = _load_pipeline(
+                model_name, device,
+                AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline, torch,
+                log=self._log,
+            )
+        except Exception as e:
+            self._log(f"[HF 엔진 로드 실패] {e}")
+            raise
+
         self._model_name = model_name
+        self._log(f"[HF 모델 로드 완료] {model_name}")
 
     def transcribe(
         self,
@@ -40,6 +53,7 @@ class HFWhisperEngine(BaseWhisperEngine):
         if lang:
             generate_kwargs["language"] = lang
 
+        self._log(f"[HF 전사 시작] {audio_path}")
         result = self._pipeline(
             audio_path,
             return_timestamps=True,
@@ -62,7 +76,17 @@ class HFWhisperEngine(BaseWhisperEngine):
                 yield {"start": start, "end": end, "text": text}
 
     def unload_model(self) -> None:
-        self._pipeline = None
+        if self._pipeline is not None:
+            try:
+                import torch
+                model = getattr(self._pipeline, "model", None)
+                if model is not None:
+                    model.cpu()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            self._pipeline = None
 
     def is_loaded(self) -> bool:
         return self._pipeline is not None
@@ -80,11 +104,14 @@ def _resolve_device(settings_device: str) -> str:
         return "cpu"
 
 
-def _load_pipeline(model_name, device, AutoModel, AutoProcessor, pipeline_fn, torch):
+def _load_pipeline(model_name, device, AutoModel, AutoProcessor, pipeline_fn, torch, log=None):
     """CUDA로 먼저 시도하고, CUDA 관련 오류가 발생하면 CPU로 폴백합니다."""
+    if log is None:
+        log = lambda m: None
 
     def _build(dev: str):
         dtype = torch.float16 if dev == "cuda" else torch.float32
+        log(f"[HF] 모델 다운로드/로드 중 (device={dev}, dtype={dtype}) ...")
         model = AutoModel.from_pretrained(
             model_name,
             torch_dtype=dtype,
@@ -108,6 +135,6 @@ def _load_pipeline(model_name, device, AutoModel, AutoProcessor, pipeline_fn, to
         if device == "cuda" and any(
             kw in err_str for kw in ("cublas", "cuda", "dll", "not found", "out of memory")
         ):
-            # CUDA 관련 오류 → CPU 폴백
+            log(f"[HF] CUDA 로드 실패 → CPU로 폴백: {e}")
             return _build("cpu")
         raise
