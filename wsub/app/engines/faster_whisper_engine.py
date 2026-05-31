@@ -128,7 +128,17 @@ class FasterWhisperEngine(BaseWhisperEngine):
         self._compute_type = _CPU_COMPUTE
 
     def unload_model(self) -> None:
-        self._model = None
+        if self._model is not None:
+            # ctranslate2 모델의 unload_model()을 명시적으로 호출해 CUDA 메모리를 즉시 해제.
+            # Python GC에 맡기면 소멸자가 지연 실행되어 다음 run()의 load_model()과 겹쳐
+            # VRAM 이중 점유나 CUDA context 충돌이 발생할 수 있다.
+            try:
+                ct2_model = getattr(self._model, "model", None)
+                if ct2_model is not None and hasattr(ct2_model, "unload_model"):
+                    ct2_model.unload_model()
+            except Exception:
+                pass
+            self._model = None
 
     def is_loaded(self) -> bool:
         return self._model is not None

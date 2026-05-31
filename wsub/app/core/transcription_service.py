@@ -181,6 +181,8 @@ class TranscriptionService:
     def __init__(self) -> None:
         self._worker: TranscriptionWorker | None = None
         self._jobs: dict[str, Job] = {}
+        # 중지 후 자연 종료를 기다리는 이전 워커들 (main thread block 방지)
+        self._retiring: list[TranscriptionWorker] = []
 
     def create_job(self, file_path: Path) -> Job:
         job = Job(id=str(uuid.uuid4()), file_path=file_path)
@@ -197,8 +199,12 @@ class TranscriptionService:
         on_log: Callable[[str], None],
         on_segment: Callable[[dict], None],
     ) -> TranscriptionWorker:
-        """이전 워커를 완전히 종료시킨 뒤 새 워커를 시작합니다."""
-        self._teardown_worker()
+        """이전 워커의 신호를 끊고 새 워커를 즉시 시작합니다.
+
+        이전 워커가 아직 실행 중이면 (중지 중) 신호 연결만 끊고 background에서
+        자연 종료를 기다립니다. main thread를 절대 block하지 않습니다.
+        """
+        self._retire_current_worker()
 
         worker = TranscriptionWorker()
         worker.set_settings(settings)
@@ -216,7 +222,7 @@ class TranscriptionService:
         return worker
 
     def stop(self) -> None:
-        """중지 요청만 보내고 즉시 반환합니다. 스레드 정리는 다음 start()에서 수행됩니다."""
+        """중지 요청만 보내고 즉시 반환합니다."""
         if not self._worker:
             return
         try:
@@ -229,30 +235,30 @@ class TranscriptionService:
         return bool(self._worker and self._worker.isRunning())
 
     def reset(self) -> None:
-        """완료 후 서비스를 초기 상태로 되돌립니다. 워커가 살아있으면 먼저 종료합니다."""
-        self._teardown_worker()
+        """완료 후 서비스를 초기 상태로 되돌립니다."""
+        self._retire_current_worker()
         self._worker = None
         self._jobs.clear()
 
-    def _teardown_worker(self) -> None:
-        """이전 워커의 신호를 끊고 스레드가 완전히 종료될 때까지 대기합니다.
+    def _retire_current_worker(self) -> None:
+        """현재 워커의 신호를 끊고 background에서 자연 종료되도록 둡니다.
 
-        QThread를 wait()로 확실히 종료시키지 않으면, 새 워커 시작 시
-        이전 스레드의 CUDA/모델 상태가 남아 두 번째 실행이 멈추는 문제가 발생합니다.
+        main thread에서 절대 wait()하지 않습니다 — UI가 멈추는 원인이기 때문입니다.
+        이전에 retire된 워커 중 이미 종료된 것은 여기서 정리합니다.
         """
-        if not self._worker:
-            return
-        try:
-            self._worker.disconnect()
-        except RuntimeError:
-            pass
-        self._worker.request_stop()
-        if self._worker.isRunning():
-            # 최대 10초 대기 (모델 언로드/추론 종료 시간 확보)
-            if not self._worker.wait(10000):
-                self._worker.terminate()
-                self._worker.wait(2000)
-        self._worker = None
+        if self._worker:
+            try:
+                self._worker.disconnect()
+            except RuntimeError:
+                pass
+            self._worker.request_stop()
+            if self._worker.isRunning():
+                # 아직 실행 중 — 강제 종료(terminate) 없이 자연 종료 대기
+                self._retiring.append(self._worker)
+            self._worker = None
+
+        # 이미 종료된 이전 워커 정리
+        self._retiring = [w for w in self._retiring if w.isRunning()]
 
     def get_job(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)

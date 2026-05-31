@@ -141,9 +141,10 @@ class QueueViewModel(QObject):
         self._update_overall_progress()
 
         # 모든 job이 완료되면 3초 후 자동 초기화
+        # self를 context로 전달해 항상 main thread에서 실행되도록 보장
         if all(j.status == JobStatus.COMPLETED for j in self._jobs):
             self.log_appended.emit("[완료] 모든 작업이 완료되었습니다. 3초 후 목록을 초기화합니다.")
-            QTimer.singleShot(3000, self._reset_after_all_completed)
+            QTimer.singleShot(3000, self, self._reset_after_all_completed)
 
     def _reset_after_all_completed(self) -> None:
         """모든 작업 완료 후 큐를 초기화합니다."""
