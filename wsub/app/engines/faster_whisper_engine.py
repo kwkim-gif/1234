@@ -20,6 +20,8 @@ _BUILTIN_MODELS: dict[str, str] = {
     "openai/whisper-large-v3-turbo": "large-v3-turbo",
     # Kotoba faster 버전 (CTranslate2 포맷 → faster-whisper 직접 사용 가능)
     "kotoba-tech/kotoba-whisper-v2.0-faster": "kotoba-tech/kotoba-whisper-v2.0-faster",
+    # Anime Whisper (CTranslate2 포맷 → faster-whisper 직접 사용 가능)
+    "litagin/anime-whisper": "litagin/anime-whisper",
 }
 
 # CUDA compute type 시도 순서
