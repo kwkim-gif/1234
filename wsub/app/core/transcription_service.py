@@ -178,6 +178,10 @@ class TranscriptionWorker(QThread):
 class TranscriptionService:
     """Job 생성 및 워커 라이프사이클 관리."""
 
+    # 기능 시그널 이름 목록 (worker_finished 제외)
+    _FUNC_SIGNALS = ("progress_updated", "job_completed", "job_failed",
+                     "log_message", "segment_ready")
+
     def __init__(self) -> None:
         self._worker: TranscriptionWorker | None = None
         self._jobs: dict[str, Job] = {}
@@ -199,12 +203,8 @@ class TranscriptionService:
         on_log: Callable[[str], None],
         on_segment: Callable[[dict], None],
     ) -> TranscriptionWorker:
-        """이전 워커의 신호를 끊고 새 워커를 즉시 시작합니다.
-
-        이전 워커가 아직 실행 중이면 (중지 중) 신호 연결만 끊고 background에서
-        자연 종료를 기다립니다. main thread를 절대 block하지 않습니다.
-        """
-        self._retire_current_worker()
+        """이전 워커의 기능 시그널만 끊고 새 워커를 즉시 시작합니다."""
+        self._disconnect_and_retire()
 
         worker = TranscriptionWorker()
         worker.set_settings(settings)
@@ -217,47 +217,59 @@ class TranscriptionService:
         worker.log_message.connect(on_log)
         worker.segment_ready.connect(on_segment)
 
+        # 워커가 자연 종료되면 레퍼런스를 자동 정리 (main thread block 없음)
+        # worker_finished는 disconnect_and_retire에서 끊지 않으므로 유지된다.
+        _svc = self
+        _w = worker
+        def _auto_clear():
+            if _svc._worker is _w:
+                _svc._worker = None
+            _svc._retiring = [r for r in _svc._retiring if r is not _w and r.isRunning()]
+        worker.worker_finished.connect(_auto_clear)
+
         self._worker = worker
         worker.start()
         return worker
 
     def stop(self) -> None:
-        """중지 요청만 보내고 즉시 반환합니다."""
+        """기능 시그널만 끊고 중지 요청 후 즉시 반환합니다."""
         if not self._worker:
             return
-        try:
-            self._worker.disconnect()
-        except RuntimeError:
-            pass
+        self._disconnect_func_signals(self._worker)
         self._worker.request_stop()
+        # self._worker는 유지 — worker_finished 콜백이 종료 시 자동으로 None 처리
 
     def is_running(self) -> bool:
         return bool(self._worker and self._worker.isRunning())
 
     def reset(self) -> None:
-        """완료 후 서비스를 초기 상태로 되돌립니다."""
-        self._retire_current_worker()
+        """서비스를 초기 상태로 되돌립니다."""
+        self._disconnect_and_retire()
         self._worker = None
         self._jobs.clear()
 
-    def _retire_current_worker(self) -> None:
-        """현재 워커의 신호를 끊고 background에서 자연 종료되도록 둡니다.
+    # ── 내부 헬퍼 ────────────────────────────────────────────────────
 
-        main thread에서 절대 wait()하지 않습니다 — UI가 멈추는 원인이기 때문입니다.
-        이전에 retire된 워커 중 이미 종료된 것은 여기서 정리합니다.
+    def _disconnect_func_signals(self, worker: TranscriptionWorker) -> None:
+        """progress/completed/failed/log/segment 시그널만 끊습니다.
+        worker_finished는 유지해 자동 cleanup 콜백이 동작하게 합니다.
         """
-        if self._worker:
+        for sig_name in self._FUNC_SIGNALS:
             try:
-                self._worker.disconnect()
+                getattr(worker, sig_name).disconnect()
             except RuntimeError:
                 pass
+
+    def _disconnect_and_retire(self) -> None:
+        """현재 워커의 기능 시그널을 끊고, 실행 중이면 retire 목록에 보관합니다."""
+        if self._worker:
+            self._disconnect_func_signals(self._worker)
             self._worker.request_stop()
             if self._worker.isRunning():
-                # 아직 실행 중 — 강제 종료(terminate) 없이 자연 종료 대기
                 self._retiring.append(self._worker)
             self._worker = None
 
-        # 이미 종료된 이전 워커 정리
+        # 이미 종료된 retire 워커 정리
         self._retiring = [w for w in self._retiring if w.isRunning()]
 
     def get_job(self, job_id: str) -> Job | None:

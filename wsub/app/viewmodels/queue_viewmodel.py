@@ -81,7 +81,11 @@ class QueueViewModel(QObject):
                 self._jobs[i] = new_job
 
         pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
+        self.log_appended.emit(
+            f"[큐] 전체 {len(self._jobs)}개, PENDING {len(pending)}개"
+        )
         if not pending:
+            self.log_appended.emit("[큐] 처리할 파일 없음 — 시작 취소")
             return
 
         self.jobs_changed.emit()

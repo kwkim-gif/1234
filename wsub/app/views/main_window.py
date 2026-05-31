@@ -287,13 +287,15 @@ class MainWindow(QMainWindow):
             self._sync_bar_from_settings()
 
     def _on_start(self) -> None:
-        if self._vm.queue_vm.startable_count() == 0:
+        count = self._vm.queue_vm.startable_count()
+        self._log_panel.append_log(f"[시작] 대기 파일 {count}개 확인됨")
+        if count == 0:
             QMessageBox.information(self, "알림", "처리할 파일이 없습니다.")
             return
         self._sync_settings_from_bar()
         self._log_panel.clear_live()
         self._vm.start()
-        self._log_panel.append_log("작업 시작")
+        self._log_panel.append_log("[시작] 워커 시작 요청 완료")
 
     def _on_stop(self) -> None:
         self._vm.stop()
