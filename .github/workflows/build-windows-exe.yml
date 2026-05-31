@@ -258,11 +258,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - name: 현재 빌드 매니페스트를 prev_manifest에 복사 (다음 빌드용)
+        if: ${{ github.event.inputs.build_mode != 'onefile' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "prev_manifest" | Out-Null
+          Copy-Item "dist\build_manifest.json" "prev_manifest\build_manifest.json" -Force
+
       - name: 현재 빌드 매니페스트 캐시 저장 (다음 빌드 패치 생성용)
         if: ${{ github.event.inputs.build_mode != 'onefile' }}
         uses: actions/cache/save@v4
         with:
-          path: wsub/dist/build_manifest.json
+          path: wsub/prev_manifest
           key: wsub-manifest-${{ github.ref_name }}-${{ github.sha }}
 
       - name: 아티팩트 업로드 (onefile)
