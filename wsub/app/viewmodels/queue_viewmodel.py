@@ -27,6 +27,7 @@ class QueueViewModel(QObject):
         self._service = service
         self._jobs: list[Job] = []
         self._ffmpeg = FFmpegHandler()
+        self._active_settings: AppSettings | None = None  # 실행 중 설정 (자동 연속 처리용)
 
     # ── 큐 조작 ──────────────────────────────────────────────────
     def add_files(self, paths: list[str]) -> None:
@@ -88,6 +89,7 @@ class QueueViewModel(QObject):
             self.log_appended.emit("[큐] 처리할 파일 없음 — 시작 취소")
             return
 
+        self._active_settings = settings
         self.jobs_changed.emit()
         self._service.start(
             jobs=pending,
@@ -101,6 +103,7 @@ class QueueViewModel(QObject):
 
     def stop_transcription(self) -> None:
         """워커를 중지하고, 완료되지 않은 파일을 PENDING(새 객체)으로 교체합니다."""
+        self._active_settings = None
         self._service.stop()
 
         reset_statuses = {
@@ -144,9 +147,27 @@ class QueueViewModel(QObject):
         self.jobs_changed.emit()
         self._update_overall_progress()
 
+        # 워커가 현재 배치를 다 소진했을 때 새로 추가된 PENDING 파일이 있으면 연속 처리
+        # (워커 실행 중에 추가된 파일은 해당 워커의 큐에 없으므로 여기서 재시작)
+        if not self._service.is_running() and self._active_settings is not None:
+            new_pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
+            if new_pending:
+                self.log_appended.emit(f"[자동 연속] 새로 추가된 파일 {len(new_pending)}개 처리를 시작합니다.")
+                self._service.start(
+                    jobs=new_pending,
+                    settings=self._active_settings,
+                    on_progress=self._on_progress,
+                    on_completed=self._on_completed,
+                    on_failed=self._on_failed,
+                    on_log=self._on_log,
+                    on_segment=self._on_segment,
+                )
+                return
+
         # 모든 job이 완료되면 3초 후 자동 초기화
         # self를 context로 전달해 항상 main thread에서 실행되도록 보장
         if all(j.status == JobStatus.COMPLETED for j in self._jobs):
+            self._active_settings = None
             self.log_appended.emit("[완료] 모든 작업이 완료되었습니다. 3초 후 목록을 초기화합니다.")
             QTimer.singleShot(3000, self, self._reset_after_all_completed)
 
@@ -168,6 +189,21 @@ class QueueViewModel(QObject):
         self.job_status_changed.emit(job_id)
         self.error_appended.emit(f"[실패] {error}")
         self.jobs_changed.emit()
+
+        # 워커 종료 후 새로 추가된 PENDING 파일이 있으면 연속 처리
+        if not self._service.is_running() and self._active_settings is not None:
+            new_pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
+            if new_pending:
+                self.log_appended.emit(f"[자동 연속] 새로 추가된 파일 {len(new_pending)}개 처리를 시작합니다.")
+                self._service.start(
+                    jobs=new_pending,
+                    settings=self._active_settings,
+                    on_progress=self._on_progress,
+                    on_completed=self._on_completed,
+                    on_failed=self._on_failed,
+                    on_log=self._on_log,
+                    on_segment=self._on_segment,
+                )
 
     def _on_log(self, message: str) -> None:
         self.log_appended.emit(message)

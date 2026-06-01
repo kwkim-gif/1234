@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         self._file_table.move_down_requested.connect(self._vm.queue_vm.move_down)
         self._file_table.remove_requested.connect(self._vm.queue_vm.remove_job)
         self._file_table.remove_multiple_requested.connect(self._vm.queue_vm.remove_jobs)
+        self._file_table.clear_completed_requested.connect(self._vm.queue_vm.clear_completed)
         self._file_table.open_output_requested.connect(self._open_output_file)
         self._file_table.open_folder_requested.connect(self._open_output_folder)
         return self._file_table

@@ -30,6 +30,7 @@ class FileTable(QTableWidget):
     move_down_requested = Signal(int)
     remove_requested = Signal(int)
     remove_multiple_requested = Signal(list)
+    clear_completed_requested = Signal()
     open_output_requested = Signal(int)
     open_folder_requested = Signal(int)
 
@@ -118,6 +119,7 @@ class FileTable(QTableWidget):
         act_down = menu.addAction("아래로 이동") if not multi else None
         menu.addSeparator()
         act_remove = menu.addAction(f"제거 ({len(selected)}개)" if multi else "제거")
+        act_clear_completed = menu.addAction("완료된 파일 목록에서 삭제")
         menu.addSeparator()
         act_open_file = menu.addAction("출력 파일 열기") if not multi else None
         act_open_folder = menu.addAction("출력 폴더 열기") if not multi else None
@@ -132,6 +134,8 @@ class FileTable(QTableWidget):
                 self.remove_multiple_requested.emit(selected)
             else:
                 self.remove_requested.emit(row)
+        elif action == act_clear_completed:
+            self.clear_completed_requested.emit()
         elif action == act_open_file and act_open_file:
             self.open_output_requested.emit(row)
         elif action == act_open_folder and act_open_folder:
